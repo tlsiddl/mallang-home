@@ -5,7 +5,7 @@
 
 | 파일 | 내용 |
 |---|---|
-| `mallang-home-1.23.0.personal-extension.zip` | 말랑 홈 (홈 화면 개인 확장) |
+| `mallang-home-1.24.0.personal-extension.zip` | 말랑 홈 (홈 화면 개인 확장) |
 | `Mallang_Celestial_Theme.json` | 말랑 천문 테마 (앱 전체 테마) |
 
 둘은 따로 써도 되고, 같이 쓰면 제일 예뻐요.
@@ -25,18 +25,29 @@
   <img src="screenshots/theme_roleplay_dark.webp" width="49%" alt="롤플 채팅 다크">
   <img src="screenshots/theme_roleplay_light.webp" width="49%" alt="롤플 채팅 라이트">
 </p>
+
+**대화 모드 · 말풍선**
 <p>
-  <img src="screenshots/theme_conversation_dark.webp" width="49%" alt="대화 모드 말풍선">
-  <img src="screenshots/theme_characters_light.webp" width="49%" alt="캐릭터 탭">
+  <img src="screenshots/theme_conversation_bubble_dark.webp" width="49%" alt="대화 말풍선 다크">
+  <img src="screenshots/theme_conversation_bubble_light.webp" width="49%" alt="대화 말풍선 라이트">
 </p>
+
+**대화 모드 · 클래식**
 <p>
+  <img src="screenshots/theme_conversation_classic_dark.webp" width="49%" alt="대화 클래식 다크">
+  <img src="screenshots/theme_conversation_classic_light.webp" width="49%" alt="대화 클래식 라이트">
+</p>
+
+**캐릭터 탭 · 확인창**
+<p>
+  <img src="screenshots/theme_characters_light.webp" width="49%" alt="캐릭터 탭">
   <img src="screenshots/theme_dialog_dark.webp" width="49%" alt="확인창">
 </p>
 
 ### 폰
 <p>
   <img src="screenshots/theme_roleplay_phone.webp" width="24%" alt="폰 롤플">
-  <img src="screenshots/theme_conversation_phone.webp" width="24%" alt="폰 대화">
+  <img src="screenshots/theme_conversation_bubble_phone.webp" width="24%" alt="폰 대화">
   <img src="screenshots/mallang_home_phone.webp" width="24%" alt="폰 말랑 홈">
 </p>
 
@@ -47,7 +58,7 @@
 ## 설치 방법
 
 ### 말랑 홈 (개인 확장)
-1. 위의 `mallang-home-1.23.0.personal-extension.zip` 을 내려받아요. (압축은 풀지 않아도 돼요)
+1. 위의 `mallang-home-1.24.0.personal-extension.zip` 을 내려받아요. (압축은 풀지 않아도 돼요)
 2. 마리나라 **설정 → 개인 확장 → 설치** 에서 zip 파일을 골라요.
 3. 실행 허락 창이 뜨면 허락해 줘요.
 4. 새로고침하면 홈 화면이 말랑 홈으로 바뀌어요.
@@ -73,6 +84,7 @@
 - LLM 목록 + IGX 실시간 점수 (키 필요 없음)
 - 메모장 · 확장 바로가기
 - 위젯: 날씨(캐릭터가 날씨 한마디 해 줌) · 달력 · 음악 플레이어 · 사진
+- 사진 위젯: 내 기기 · 서버 갤러리 · **채팅방 갤러리**(롤플 방에서 만든 그림) 중에서 골라 넣기
 - **Play 메뉴**: 마리나라 홈 브라우저의 탭 · 북마크를 한곳에 (위 메뉴 / 카드 중 고르기)
 - START ▸ Arrange 로 카드 위치를 마음대로 옮기기
 - 화면이 좁으면 한 줄로 쌓아 보여 줘요 (START ▸ Phone view 에서 Mini PC 로 바꿀 수 있어요)
