@@ -55,6 +55,7 @@
   <img src="screenshots/theme_roleplay_phone_light.webp" width="24%" alt="폰 롤플 라이트">
   <img src="screenshots/theme_conversation_bubble_phone_light.webp" width="24%" alt="폰 대화 라이트">
   <img src="screenshots/mallang_home_phone_light.webp" width="24%" alt="폰 말랑 홈 라이트">
+  <img src="screenshots/theme_chatlist_convo_phone_light.webp" width="24%" alt="폰 채팅 목록 라이트">
 </p>
 
 > 스크린샷 속 캐릭터와 대화는 전부 예시예요.
