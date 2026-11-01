@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   /* ══════════════════════════════════════════════════════════
-   *  말랑 홈 (공유판) v1.29.0 · Celestial Editorial
+   *  말랑 홈 (공유판) v1.30.0 · Celestial Editorial
    *  마리나라 기본 홈(HomeBrowserHub.HomePage) 안에 새 홈을 그리고
    *  기본 내용은 숨긴다. 기본 홈의 버튼(새 채팅·최근 채팅 카드)은
    *  DOM에 그대로 남겨 두고 대신 눌러 주는 방식이라 앱 기능을 건드리지 않는다.
@@ -1292,7 +1292,60 @@
     const base = PROV_NAME[prov] || prov || "Unknown";
     return names.length ? `${base} · ${names.slice(0, 2).join(", ")}${names.length > 2 ? "…" : ""}` : base;
   }
-  const siteCur = (prov) => apw().siteCur[prov] || (prov === "custom" || prov === "openai" ? "USD" : "USD");
+  const siteCur = (prov) => apw().siteCur[prov] || PRESETS[apw().sitePre?.[prov] || ""]?.cur || "USD";
+  /* ── 링크API 가격표 (2026-11-01, 사이트 화면 기준 · CN¥) ──
+     t: [입력, 출력] 100만 토큰당(적힌 값 — 실제는 사이트 곱하기 ×1.6, 이름 끝 -r은 그대로)
+     c: 한 번 부를 때마다 고정 가격 ([次]·[SP]·[free]) — 곱하기 없음 */
+  const LINK_T = {
+    "claude-fable-5": [5, 25], "claude-fable-5-1": [5, 25], "claude-haiku-4-5-20251001": [0.5, 2.5], "claude-haiku-4-5-20251001-r": [0.5, 2.5], "claude-haiku-5-5": [0.14, 0.7],
+    "claude-opus-4-5-20251101": [4, 20], "claude-opus-4-6": [2.5, 12.5], "claude-opus-4-6-max": [8, 40], "claude-opus-4-6-r": [2.5, 12.5], "claude-opus-4-6-thinking": [2.5, 12.5],
+    "claude-opus-4-7": [2.5, 12.5], "claude-opus-4-7-r": [2.5, 12.5], "claude-opus-4-8": [2.5, 12.5], "claude-opus-4-8-r": [2.5, 12.5], "claude-opus-5": [2.5, 12.5], "claude-opus-5-r": [2.5, 12.5], "claude-opus-5-max": [8, 40],
+    "claude-opus-5-5": [2, 10], "claude-opus-5-5-r": [2, 10], "claude-opus-5-5-max": [6.4, 32],
+    "claude-sonnet-4-6": [1.5, 7.5], "claude-sonnet-4-6-r": [1.5, 7.5], "claude-sonnet-4-6-thinking": [1.5, 7.5], "claude-sonnet-5": [1, 5], "claude-sonnet-5-r": [1, 5], "claude-sonnet-5-5": [1, 5], "claude-sonnet-5-5-r": [1, 5],
+    "codex-auto-review": [0.04, 0.24],
+    "gemini-2.5-flash-r": [0.15, 1.25], "gemini-2.5-pro": [0.625, 5], "gemini-2.5-pro-r": [0.625, 5], "gemini-3-flash-preview": [0.25, 1.5], "gemini-3-flash-preview-r": [0.25, 1.5],
+    "gemini-3-pro-image": [3.2, 192], "gemini-3-pro-preview": [1, 6], "gemini-3-pro-preview-r": [1, 6], "gemini-3.1-flash-image": [0.8, 96], "gemini-3.1-flash-image-preview": [0.8, 96],
+    "gemini-3.1-flash-lite": [0.125, 0.75], "gemini-3.1-flash-lite-r": [0.125, 0.752], "gemini-3.1-flash-lite-preview": [0.4, 2.4], "gemini-3.1-pro-preview": [1, 6], "gemini-3.1-pro-preview-r": [1, 6],
+    "gemini-3.5-flash": [0.75, 4.5], "gemini-3.5-flash-r": [0.75, 4.5], "gemini-3.5-flash-lite": [0.15, 1.25], "gemini-3.5-flash-lite-r": [0.15, 1.25],
+    "gemini-3.6-flash": [0.375, 1.875], "gemini-3.6-flash-r": [0.375, 1.875], "gemini-3.7-flash": [0.375, 1.875], "gemini-3.7-flash-r": [0.375, 1.875], "gemini-3.8-flash": [0.375, 1.875], "gemini-3.8-flash-r": [0.375, 1.875],
+    "gemini-4-argon": [1, 5], "gemini-4-argon-high": [1, 5], "gemini-4-argon-r": [1, 5],
+    "glm-5.2": [3.2, 11.2], "glm-5.3": [3.2, 11.2], "glm-5.3-flash": [0.16, 0.56],
+    "gpt-4.1": [1, 4], "gpt-4.1-mini": [0.2, 0.8], "gpt-4o": [1.25, 5], "gpt-4o-mini": [0.075, 0.3], "gpt-5": [2.375, 19], "gpt-5-mini": [0.125, 1], "gpt-5-nano": [0.095, 0.76],
+    "gpt-5.1": [2.375, 19], "gpt-5.2": [3.325, 26.6], "gpt-5.3-codex": [3.325, 26.6], "gpt-5.4": [4.75, 28.5], "gpt-5.4-mini": [0.375, 2.25], "gpt-5.4-nano": [0.38, 2.375],
+    "gpt-5.5": [4, 24], "gpt-5.5-pro": [96, 576], "gpt-5.6-luna": [0.04, 0.24], "gpt-5.6-sol": [0.8, 4],
+  };
+  const LINK_C = {
+    "[次]claude-fable-5": 0.2, "[次]claude-fable-5-1": 0.2, "[次]claude-opus-4-5": 0.2, "[次]claude-opus-4-6": 0.2, "[次]claude-opus-4-6-thinking": 0.2, "[次]claude-opus-4-7": 0.2, "[次]claude-opus-4-7-thinking": 0.2,
+    "[次]claude-opus-4-8": 0.2, "[次]claude-opus-5": 0.2, "[次]claude-opus-5-5": 0.2, "[次]claude-sonnet-4-6": 0.15, "[次]claude-sonnet-4-6-thinking": 0.15, "[次]claude-sonnet-5": 0.15,
+    "[次]deepseek-v4-flash": 0.015, "[次]deepseek-v4-pro": 0.05, "[次]deepseek-v4.1-flash": 0.04,
+    "[次]gemini-2.5-pro": 0.03, "[次]gemini-3-flash-preview": 0.015, "[次]gemini-3-pro-preview": 0.05, "[次]gemini-3.1-pro-preview": 0.05,
+    "[次]gemini-3.5-flash": 0.02, "[次]gemini-3.6-flash": 0.02, "[次]gemini-3.7-flash": 0.02, "[次]gemini-3.8-flash": 0.02, "[次]gemini-4-argon": 0.05,
+    "[次]glm-5.1": 0.03, "[次]glm-5.2": 0.03, "[次]glm-5.3": 0.05, "[次]glm-5.3-flash": 0.035, "[次]grok-4.5": 0.015, "[次]grok-4.6": 0.03, "[次]grok-4.7": 0.015,
+    "[SP]claude-fable-5": 0.1, "[SP]claude-fable-5-1": 0.1, "[SP]claude-opus-4-6": 0.1, "[SP]claude-opus-4-7": 0.1, "[SP]claude-opus-4-8": 0.1, "[SP]claude-opus-5": 0.1, "[SP]claude-opus-5-5": 0.1,
+    "[SP]claude-sonnet-4-6": 0.1, "[SP]claude-sonnet-5": 0.1, "[SP]deepseek-v4-flash": 0.015, "[SP]deepseek-v4-pro": 0.02, "[SP]deepseek-v4.1-flash": 0.03,
+    "gemini-2.5-flash-image": 0.08, "gemini-3-pro-image-c": 0.18, "gemini-3-pro-image-preview": 0.35, "gemini-3.1-flash-image-c": 0.12, "gemini-3.1-flash-lite-image": 0.06,
+  };
+  const PRESETS = { linkapi: { cur: "CNY", mul: 1.6 } };
+  const nm = (s) => String(s || "").trim().toLowerCase().replace(/\s+/g, "");
+  const LINK_T2 = Object.fromEntries(Object.entries(LINK_T).map(([k, v]) => [nm(k), v]));
+  const LINK_C2 = Object.fromEntries(Object.entries(LINK_C).map(([k, v]) => [nm(k), v]));
+  const sitePre = (prov) => apw().sitePre?.[prov] || "";
+  const siteMul = (prov) => { const v = apw().siteMul?.[prov]; return v === "" || v == null ? (PRESETS[sitePre(prov)]?.mul || 1) : Number(v) || 1; };
+  const isCallName = (name) => /^\s*\[[^\]]+\]/.test(name);
+  // 사이트 기본 단가 (그 사이트 통화) — {pin, pout, pcall, src} · 곱하기 적용(회당·-r 제외)
+  function siteDefault(prov, name) {
+    const pre = sitePre(prov), key = nm(name), mul = siteMul(prov), skipR = /-r$/i.test(name.trim());
+    if (pre === "linkapi") {
+      if (/^\[free\]/i.test(key)) return { pin: 0, pout: 0, pcall: 0, src: "pre" };
+      if (LINK_C2[key] != null) return { pin: 0, pout: 0, pcall: LINK_C2[key], src: "pre" };
+      if (LINK_T2[key]) { const m = skipR ? 1 : mul; return { pin: LINK_T2[key][0] * m, pout: LINK_T2[key][1] * m, pcall: 0, src: "pre" }; }
+    }
+    const d = defPrice(name.replace(/^\s*\[[^\]]+\]\s*/, ""));
+    if (!d || isCallName(name)) return null;
+    const c = siteCur(prov), m = skipR ? 1 : mul;
+    return { pin: fromUSD(d[0], c) * m, pout: fromUSD(d[1], c) * m, pcall: 0, src: "def" };
+  }
+
 
   const ap = { busy: false, err: "", at: 0, done: 0, todo: 0, from: "", hours: {}, cache: null, gm: null };
   const AP_LS = "mlh-api-usage-v3";
@@ -1387,17 +1440,19 @@
   const apModelName = (m) => m.split(SEP)[1] || m;
   const apProv = (m) => m.includes(SEP) ? m.split(SEP)[0] : "";
   // 단가 찾기: 사이트별로 적은 값 → 옛 값(모델만, $) → 기본값($). 돌려주는 값은 $ 기준
+  // 내가 적은 값은 그대로(곱하기 안 함) · [입력, 출력, 회당]
   function apPrice(m) {
-    const P = apw(), prov = apProv(m), name = apModelName(m), own = P.price[prov + SEP + name];
-    if (own && (Number(own[0]) > 0 || Number(own[1]) > 0)) { const c = siteCur(prov); return { pin: toUSD(Number(own[0]) || 0, c), pout: toUSD(Number(own[1]) || 0, c), src: "set" }; }
+    const P = apw(), prov = apProv(m), name = apModelName(m), own = P.price[prov + SEP + name], c = siteCur(prov);
+    const has = (x) => x !== "" && x != null && Number(x) >= 0;
+    if (own && (has(own[0]) || has(own[1]) || has(own[2]))) return { pin: toUSD(Number(own[0]) || 0, c), pout: toUSD(Number(own[1]) || 0, c), pcall: toUSD(Number(own[2]) || 0, c), src: "set" };
     const old = P.price[name];
-    if (old && (Number(old[0]) > 0 || Number(old[1]) > 0)) return { pin: Number(old[0]) || 0, pout: Number(old[1]) || 0, src: "set" };
-    const d = defPrice(name);
-    return d ? { pin: d[0], pout: d[1], src: "def" } : null;
+    if (old && (Number(old[0]) > 0 || Number(old[1]) > 0)) return { pin: Number(old[0]) || 0, pout: Number(old[1]) || 0, pcall: 0, src: "set" };
+    const d = siteDefault(prov || "", name);
+    return d ? { pin: toUSD(d.pin, c), pout: toUSD(d.pout, c), pcall: toUSD(d.pcall, c), src: d.src } : null;
   }
-  function apCost(m, p, o) {
+  function apCost(m, p, o, n = 0) {
     const pr = apPrice(m); if (!pr) return null;
-    return (p * pr.pin + o * pr.pout) / 1e6;
+    return (p * pr.pin + o * pr.pout) / 1e6 + n * pr.pcall;
   }
   // 기간(시작 시각~) 합계 — filter(m)로 모델 거르기 · 금액은 $
   function apSum(fromMs, filter) {
@@ -1406,7 +1461,7 @@
       if (Date.parse(k + ":00:00") < fromMs) continue;
       for (const [m, r] of Object.entries(H)) {
         if (filter && !filter(m)) continue;
-        const c = apCost(m, r[0], r[1]), prov = apProv(m);
+        const c = apCost(m, r[0], r[1], r[2]), prov = apProv(m);
         tot.n += r[2]; tot.p += r[0]; tot.o += r[1]; tot.th += r[3] || 0;
         if (c == null) tot.unpriced += r[2]; else tot.cost += c;
         const name = apModelName(m), x = tot.models[name] || (tot.models[name] = { n: 0, p: 0, o: 0, cost: 0, priced: c != null });
@@ -1464,9 +1519,12 @@
     const scanned = ap.at ? new Date(ap.at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }) : "—";
     const R = P.rates;
     const priceRow = (prov, name) => {
-      const key = prov + SEP + name, pr = P.price[key] || [], c = siteCur(prov), d = defPrice(name);
-      const ph = (i) => d ? String(+fromUSD(d[i], c).toFixed(c === "KRW" ? 0 : 3)) : i ? "out" : "in";
-      return `<label><span title="${esc(name)}">${esc(name)}</span><input class="mlh-input" type="number" min="0" step="any" inputmode="decimal" data-fk="apr-${esc(key)}-0" data-apr="${esc(key)}" data-i="0" value="${pr[0] ?? ""}" placeholder="${ph(0)}"><input class="mlh-input" type="number" min="0" step="any" inputmode="decimal" data-fk="apr-${esc(key)}-1" data-apr="${esc(key)}" data-i="1" value="${pr[1] ?? ""}" placeholder="${ph(1)}"></label>`;
+      const key = prov + SEP + name, pr = P.price[key] || [], c = siteCur(prov), d = siteDefault(prov, name);
+      const call = isCallName(name) || (d && d.pcall > 0) || (pr[2] !== "" && pr[2] != null);
+      const f = (v) => String(+Number(v).toFixed(c === "KRW" ? 0 : 4));
+      const inp = (i, ph) => `<input class="mlh-input" type="number" min="0" step="any" inputmode="decimal" data-fk="apr-${esc(key)}-${i}" data-apr="${esc(key)}" data-i="${i}" value="${pr[i] ?? ""}" placeholder="${ph}">`;
+      return call ? `<label class="is-call"><span title="${esc(name)}">${esc(name)}</span>${inp(2, d ? f(d.pcall) + " /call" : "per call")}</label>`
+        : `<label><span title="${esc(name)}">${esc(name)}</span>${inp(0, d ? f(d.pin) : "in")}${inp(1, d ? f(d.pout) : "out")}</label>`;
     };
     const sites = apSiteModels();
     const tools = ed ? `<div class="mlh-ptools">${moveTools(w)}
@@ -1477,8 +1535,10 @@
           <div class="mlh-empty">Leave empty to use today's rate (checked once a day).</div></div>
         <div class="mlh-wxset"><span class="mlh-ptl">Prices per 1M tokens (in / out) — by site</span>
           ${sites.map(([prov, models]) => `<div class="mlh-rc-site"><div class="mlh-rc-sitehead"><b>${esc(siteName(prov))}</b>${chips("", "apscur", { id: w.id, cur: siteCur(prov) }, "cur", [["USD", "$"], ["CNY", "CN¥"], ["KRW", "₩"]]).replace(/data-wa="apscur"/g, `data-wa="apscur" data-prov="${esc(prov)}"`)}</div>
+            <div class="mlh-rc-sitehead">${chips("Price list", "appre", { id: w.id, pre: sitePre(prov) }, "pre", [["", "Official"], ["linkapi", "LinkAPI"]]).replace(/data-wa="appre"/g, `data-wa="appre" data-prov="${esc(prov)}"`)}
+              <label class="mlh-rc-mul">× <input class="mlh-input" type="number" min="0" step="any" data-apmul="${esc(prov)}" value="${esc(apw().siteMul?.[prov] ?? "")}" placeholder="${siteMul(prov)}"></label></div>
             <div class="mlh-rc-prices">${models.map((m) => priceRow(prov, m)).join("")}</div></div>`).join("") || `<div class="mlh-empty">Models show up here after your first reply ♡</div>`}
-          <div class="mlh-empty">Grey numbers are official prices (Oct 2026). Type your site's own price to replace them — e.g. LinkAPI in CN¥.</div></div>
+          <div class="mlh-empty">Grey numbers are the defaults: official prices (Oct 2026) or the LinkAPI list, already multiplied by × (not for per-call models or names ending in -r). Numbers you type are used as they are.</div></div>
         <div class="mlh-empty">Vertex uses Google's own count when the Google Cloud card is connected; relay sites use the site's own spending when its card has a connection picked. Everything else counts chat replies and rerolls in Marinara.</div>
         <div class="mlh-pfoot"><button type="button" class="mlh-link" data-wa="del" data-wid="${w.id}">Turn off</button></div>${delTools(w, "Turn off the receipt?")}</div>` : "";
     const line = (a, b, c = "") => `<div class="mlh-rc-line"><span>${a}</span><i></i><b>${b}</b>${c ? `<em>${c}</em>` : ""}</div>`;
@@ -1774,6 +1834,7 @@
     else if (a === "crcur") w.cur = v;
     else if (a === "apdisp") apw().disp = v;
     else if (a === "apscur") { const prov = b.dataset.prov; if (prov != null) apw().siteCur[prov] = v; }
+    else if (a === "appre") { const prov = b.dataset.prov, P = apw(); if (prov != null) { P.sitePre = { ...(P.sitePre || {}), [prov]: v }; if (PRESETS[v]) { P.siteCur[prov] = PRESETS[v].cur; } } }
     else if (a === "crgcur") { if (w.gcur !== v) { w.gcur = v; w.bal = ""; w.at = ""; w.tot = v === "KRW" ? "" : 300; delete w.mon; } }
     else if (a === "crsax") { delete w.sa; delete w.mon; w.saErr = ""; }
     else return false;
@@ -1794,11 +1855,13 @@
     }
     if (!(t instanceof HTMLInputElement)) return false;
     if (t.dataset.apr) {
-      const P = apw(), m = t.dataset.apr, i = Number(t.dataset.i), pr = (P.price[m] || ["", ""]).slice();
+      const P = apw(), m = t.dataset.apr, i = Number(t.dataset.i), pr = (P.price[m] || ["", "", ""]).slice();
+      while (pr.length < 3) pr.push("");
       pr[i] = t.value === "" ? "" : Math.max(0, Number(t.value) || 0);
-      if (pr[0] === "" && pr[1] === "") delete P.price[m]; else P.price[m] = pr;
+      if (pr.every((x) => x === "" || x == null)) delete P.price[m]; else P.price[m] = pr;
       savePrefs(); render(); return true;
     }
+    if ("apmul" in t.dataset) { const P = apw(); P.siteMul = { ...(P.siteMul || {}), [t.dataset.apmul]: t.value === "" ? "" : Math.max(0, Number(t.value) || 0) }; savePrefs(); render(); return true; }
     if (t.dataset.apfx) { apw()[t.dataset.apfx] = Math.max(0, Number(t.value) || 0); savePrefs(); render(); return true; }
     if (t.dataset.cr) {
       const w = widById(t.dataset.wid); if (!w) return true;
