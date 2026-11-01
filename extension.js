@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   /* ══════════════════════════════════════════════════════════
-   *  말랑 홈 (공유판) v1.35.0 · Celestial Editorial
+   *  말랑 홈 (공유판) v1.35.1 · Celestial Editorial
    *  마리나라 기본 홈(HomeBrowserHub.HomePage) 안에 새 홈을 그리고
    *  기본 내용은 숨긴다. 기본 홈의 버튼(새 채팅·최근 채팅 카드)은
    *  DOM에 그대로 남겨 두고 대신 눌러 주는 방식이라 앱 기능을 건드리지 않는다.
@@ -1765,14 +1765,22 @@
           if (!subs.length) return "";
           const pc = (x) => { if (!x) return null; const lim = Number(x.lim) || (Number(x.used) + Number(x.rem)) || 0, used = Number(x.used) || 0; const p = x.pct != null ? Number(x.pct) * (Number(x.pct) <= 1 ? 100 : 1) : lim ? used / lim * 100 : 0; return { p: Math.round(Math.min(100, p)), used }; };
           return `<div class="mlh-rc-cut"></div><div class="mlh-rc-sub">SUBSCRIPTIONS · USED (flat fee, not in the total)</div><div class="mlh-rc-items">${subs.map((x) => { const S = x.last.sub, d = pc(S.d), wk = pc(S.wk), nmx = esc(x.name || "NanoGPT");
-            return (d ? line(nmx + " · today", d.p + "%", kTok(d.used) + " tok") : "") + (wk ? line(nmx + " · this week", wk.p + "%", kTok(wk.used) + " tok") : ""); }).join("")}</div>`;
+            const nu = x.last.nu, share = (win, fromDay) => {
+              if (!nu || !win) return "";
+              const lim = Number(win.lim) || (Number(win.used) + Number(win.rem)) || 0; if (!lim) return "";
+              const by = {};
+              for (const [day, D] of Object.entries(nu.days)) { if (day < fromDay) continue; for (const [mdl, r] of Object.entries(D)) if (!(r.c > 0)) by[mdl] = (by[mdl] || 0) + r.i; }
+              return Object.entries(by).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]).map(([mdl, v]) => line(`<small>└ ${esc(mdl)}</small>`, Math.round(v / lim * 1000) / 10 + "%", kTok(v) + " in")).join("");
+            };
+            const wkFrom = S.wk?.reset ? new Date(Number(S.wk.reset) - 7 * 86400000).toISOString().slice(0, 10) : "";
+            return (d ? line(nmx + " · today", d.p + "%", kTok(d.used) + " tok") + share(S.d, nu?.today || "") : "") + (wk ? line(nmx + " · this week", wk.p + "%", kTok(wk.used) + " tok") + share(S.wk, wkFrom) : ""); }).join("")}</div>`;
         })()}
         ${(() => {
           const L = apTodayModels(); if (!L.length) return "";
           const lim = ap.allModels ? L.length : 10, tg = { G: "✓G", site: "✓site", chat: "" };
-          return `<div class="mlh-rc-cut"></div><div class="mlh-rc-sub">TODAY · EVERY MODEL (${L.length})</div><div class="mlh-rc-items">${L.slice(0, lim).map((x) => line(`${tg[x.src] ? `<u>${tg[x.src]}</u> ` : ""}${esc(x.name)} <small>· ${esc(x.site)}</small>`, x.cost == null ? "?" : show(x.cost), x.n ? x.n + "×" : kTok(x.tok || 0))).join("")}</div>${L.length > 10 ? `<button type="button" class="mlh-link" data-apall>${ap.allModels ? "Show less" : `Show all ${L.length}`}</button>` : ""}`;
+          return `<div class="mlh-rc-cut"></div><div class="mlh-rc-sub">TODAY · EVERY MODEL (${L.length})</div><div class="mlh-rc-items">${L.slice(0, lim).map((x) => line(`${tg[x.src] ? `<u>${tg[x.src]}</u> ` : ""}${esc(x.name)} <small>· ${esc(x.site)}</small>`, x.cost == null ? "?" : show(x.cost), x.n ? x.n + (x.n > 1 ? " calls" : " call") : kTok(x.tok || 0) + " tok")).join("")}</div>${L.length > 10 ? `<button type="button" class="mlh-link" data-apall>${ap.allModels ? "Show less" : `Show all ${L.length}`}</button>` : ""}`;
         })()}
-        ${top.length ? `<div class="mlh-rc-cut"></div><div class="mlh-rc-sub">TOP MODELS IN CHATS · MONTH</div><div class="mlh-rc-items">${top.map(([m, x]) => line(esc(m), x.priced ? show(x.cost) : "?", `${x.n}×`)).join("")}</div>` : ""}
+        ${top.length ? `<div class="mlh-rc-cut"></div><div class="mlh-rc-sub">TOP MODELS IN CHATS · MONTH</div><div class="mlh-rc-items">${top.map(([m, x]) => line(esc(m), x.priced ? show(x.cost) : "?", `${x.n} calls`)).join("")}</div>` : ""}
         ${(() => { const miss = new Set(); for (const [n, x] of Object.entries(M.models)) if (!x.priced) miss.add(n); if (ap.gm?.month) for (const [m, r] of Object.entries(ap.gm.month)) if (r[0] + r[1] > 0 && apCost("google_vertex" + SEP + m, r[0], r[1]) == null) miss.add(m); return miss.size ? `<div class="mlh-rc-note">✎ no price yet: ${[...miss].slice(0, 6).map(esc).join(", ")}${miss.size > 6 ? "…" : ""} — add it in Edit</div>` : ""; })()}
         ${ap.err ? `<div class="mlh-empty mlh-perr">${esc(ap.err)}</div>` : ""}${ap.gm?.err ? `<div class="mlh-empty mlh-perr">Google: ${esc(ap.gm.err)}</div>` : ""}
         <div class="mlh-rc-foot"><i class="mlh-barcode"></i><span>${ap.busy ? `reading ${ap.done}/${ap.todo || "…"}` : `checked ${esc(scanned)}`}</span><button type="button" class="mlh-wxre" data-apre title="Count again" aria-label="Count again"${ap.busy ? " disabled" : ""}>↻</button></div>
@@ -1896,7 +1904,8 @@
         if (nkeys.length) {
           try {
             const now = new Date(), iso = (d) => d.toISOString().slice(0, 10);
-            const from = iso(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1))), to = iso(now);
+            const mFrom = iso(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1))), wFrom = iso(new Date(Date.now() - 8 * 86400000)), to = iso(now);
+            const from = wFrom < mFrom ? wFrom : mFrom;
             const days = {};
             for (const k of nkeys) {
               const j = await getJ(`https://api.nano-gpt.com/api/v1/usage?from=${from}&to=${to}&group_by=day,model`, { headers: { Authorization: "Bearer " + k } })
@@ -1906,7 +1915,7 @@
                 r.c += Number(x.netCostUsd ?? x.costUsd) || 0; r.n += Number(x.requests) || 0; r.i += Number(x.inputTokens) || 0; r.o += Number(x.outputTokens) || 0; r.th += Number(x.reasoningTokens) || 0;
               }
             }
-            last.nu = { days, today: iso(now), at: Date.now() };
+            last.nu = { days, today: iso(now), month: mFrom, at: Date.now() };
           } catch (e) { last.errUse = "Usage: " + errText(e); }
         }
         if (w.key) {
@@ -1937,7 +1946,7 @@
           last.today = Math.max(0, T.d.b - B); last.month = Math.max(0, T.m.b - B); last.daySince = T.d.since; last.monthSince = T.m.since;
         }
         if (last.nu) {
-          let td = 0, mo = 0; for (const [d, D] of Object.entries(last.nu.days)) for (const r of Object.values(D)) { mo += r.c; if (d === last.nu.today) td += r.c; }
+          let td = 0, mo = 0; for (const [d, D] of Object.entries(last.nu.days)) for (const r of Object.values(D)) { if (d >= (last.nu.month || "")) mo += r.c; if (d === last.nu.today) td += r.c; }
           last.today = td; last.month = mo; last.fromUsage = true;
         }
         w.last = last; return;
