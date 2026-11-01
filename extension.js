@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   /* ══════════════════════════════════════════════════════════
-   *  말랑 홈 (공유판) v1.33.4 · Celestial Editorial
+   *  말랑 홈 (공유판) v1.34.1 · Celestial Editorial
    *  마리나라 기본 홈(HomeBrowserHub.HomePage) 안에 새 홈을 그리고
    *  기본 내용은 숨긴다. 기본 홈의 버튼(새 채팅·최근 채팅 카드)은
    *  DOM에 그대로 남겨 두고 대신 눌러 주는 방식이라 앱 기능을 건드리지 않는다.
@@ -1403,6 +1403,41 @@
     try { ap.gm = { today: await gTokens(w, t0, Date.now()), month: await gTokens(w, m0, Date.now()), at: Date.now(), err: "" }; }
     catch (e) { ap.gm = { ...(ap.gm || {}), err: e?.message === "SIGNIN" ? "" : errText(e) }; }
   }
+  /* ── 확장 프로그램이 부른 모델(/api/generate/raw) 엿보기 ──
+     마리나라가 토큰 수를 돌려주지 않아서 주고받은 글자 수로 어림 (이 기기에서 홈이 켜져 있을 때만, 생각 토큰은 모름) */
+  const EXT_LS = "mlh-ext-usage-v1";
+  const estTok = (str) => { const t = String(str || ""); const ko = (t.match(/[\u3131-\u318e\uac00-\ud7a3\u3040-\u30ff\u4e00-\u9fff]/g) || []).length; return Math.ceil(ko * 1.1 + (t.length - ko) / 4); };
+  function extStore() { try { const v = JSON.parse(localStorage.getItem(EXT_LS) || "null"); if (v && v.hours) return v; } catch {} return { hours: {} }; }
+  function extAdd(prov, model, p, o) {
+    const st = extStore(), k = hourKey(Date.now()), H = st.hours[k] || (st.hours[k] = {}), m = `${prov || "?"}${SEP}${model || "unknown"}`, r = H[m] || (H[m] = [0, 0, 0, 0]);
+    r[0] += p; r[1] += o; r[2] += 1;
+    const cut = hourKey(Date.now() - 70 * 86400000); for (const x of Object.keys(st.hours)) if (x < cut) delete st.hours[x];
+    try { localStorage.setItem(EXT_LS, JSON.stringify(st)); } catch {}
+  }
+  if (!window.__mlhRawSpy) {
+    const orig = window.fetch;
+    window.__mlhRawSpy = true;
+    const spy = async function (input, init) {
+      const res = await orig.apply(this, arguments);
+      try {
+        const url = typeof input === "string" ? input : input?.url || "";
+        if (/\/api\/generate\/raw(\?|$)/.test(url) && (init?.method || "POST").toUpperCase() === "POST" && res.ok) {
+          const body = JSON.parse(typeof init?.body === "string" ? init.body : "{}");
+          const conn = (data.conns || []).find((c) => c.id === body.connectionId) || (data.conns || []).find((c) => truthy(c.isDefault));
+          const pin = estTok((body.messages || []).map((m) => typeof m.content === "string" ? m.content : JSON.stringify(m.content || "")).join("\n"));
+          res.clone().text().then((txt) => {
+            let out = "";
+            try { const j = JSON.parse(txt); out = j.content || ""; }
+            catch { for (const line of txt.split("\n")) { const d = line.replace(/^data:\s*/, ""); try { const j = JSON.parse(d); out += j.content || j.delta || j.text || j.data?.content || ""; } catch {} } }
+            if (conn) extAdd(conn.provider, conn.model, pin, estTok(out));
+          }).catch(() => {});
+        }
+      } catch { /* 엿보기 실패는 무시 */ }
+      return res;
+    };
+    window.fetch = spy;
+    cleanups.push(() => { if (window.fetch === spy) window.fetch = orig; window.__mlhRawSpy = false; });
+  }
   async function apScan(force) {
     if (ap.busy || !wid().some((w) => w.kind === "rcpt" || w.kind === "credit")) return;
     if (!force && Date.now() - ap.at < AP_STALE) return;
@@ -1428,7 +1463,7 @@
       await Promise.all([worker(), worker(), worker()]);
       cache.chats = keep; apSaveCache();
       const hours = {};
-      for (const { h } of Object.values(keep)) for (const [k, ms] of Object.entries(h || {})) {
+      for (const { h } of [...Object.values(keep), { h: extStore().hours }]) for (const [k, ms] of Object.entries(h || {})) {
         const H = hours[k] || (hours[k] = {});
         for (const [m, r] of Object.entries(ms)) { const R = H[m] || (H[m] = [0, 0, 0, 0]); R[0] += r[0]; R[1] += r[1]; R[2] += r[2]; R[3] += r[3] || 0; }
       }
@@ -1580,6 +1615,34 @@
     const ft = relayFill(w, t0, Math.max(t0, L.daySince || t0)), fm = relayFill(w, m0, Math.max(m0, L.monthSince || m0));
     return { today: L.today + ft, month: L.month + fm, ft, fm };
   }
+  function vxMatcher() {
+    const vx = (data.conns || []).filter((c) => c.provider !== "google_vertex" && /aiplatform\.googleapis\.com/i.test(String(c.baseUrl || "")));
+    const pairs = new Set(vx.map((c) => c.provider + SEP + nm(c.model || ""))), anyP = new Set(vx.filter((c) => !c.model).map((c) => c.provider)), inVx = apw().inVx || {};
+    return (m) => apProv(m) === "google_vertex" || pairs.has(apProv(m) + SEP + nm(apModelName(m))) || anyP.has(apProv(m)) || !!inVx[apProv(m)];
+  }
+  // 오늘 쓴 모델 전부: Vertex = 구글 집계 · 로그 있는 중계 사이트 = 사이트 로그 · 나머지 = 채팅 기록 (겹치지 않게)
+  function apTodayModels() {
+    const now = new Date(), t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime(), out = [];
+    const gm = ap.gm?.today, vx = gm ? vxMatcher() : null;
+    if (gm) for (const [m, r] of Object.entries(gm)) if (r[0] + r[1] > 0) out.push({ name: m, site: "Vertex AI", src: "G", cost: apCost("google_vertex" + SEP + m, r[0], r[1]), tok: r[0] + r[1] });
+    const logged = [];
+    for (const w of wid()) {
+      if (w.kind !== "credit" || w.mode !== "relay" || w.last?.src !== "logs") continue;
+      logged.push(w);
+      const st = relayLogStore(w), by = {};
+      for (const [t, q, mdl] of st.rows) if (t >= t0) { const x = by[mdl || "?"] || (by[mdl || "?"] = { q: 0, n: 0 }); x.q += q; x.n++; }
+      for (const [mdl, x] of Object.entries(by)) out.push({ name: mdl, site: w.name || hostOf(w.url), src: "site", cost: toUSD(x.q, w.cur === "CNY" ? "CNY" : "USD"), n: x.n });
+    }
+    const chat = {};
+    for (const [k, H] of Object.entries(ap.hours)) { if (Date.parse(k + ":00:00") < t0) continue;
+      for (const [m, r] of Object.entries(H)) {
+        if (vx && vx(m)) continue;
+        const rw = relayFor(m); if (rw && logged.includes(rw)) continue;
+        const x = chat[m] || (chat[m] = { p: 0, o: 0, n: 0 }); x.p += r[0]; x.o += r[1]; x.n += r[2];
+      } }
+    for (const [m, x] of Object.entries(chat)) { const rw = relayFor(m); out.push({ name: apModelName(m), site: rw ? (rw.name || hostOf(rw.url)) : (PROV_NAME[apProv(m)] || apProv(m)), src: "chat", cost: apCost(m, x.p, x.o, x.n), n: x.n, tok: x.p + x.o }); }
+    return out.sort((a, b) => (b.cost ?? -1) - (a.cost ?? -1));
+  }
   function apTotals() {
     const now = new Date(), t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime(), m0 = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
     const T = apSum(t0), M = apSum(m0), rows = {};
@@ -1672,6 +1735,11 @@
           const pc = (x) => { if (!x) return null; const lim = Number(x.lim) || (Number(x.used) + Number(x.rem)) || 0, used = Number(x.used) || 0; const p = x.pct != null ? Number(x.pct) * (Number(x.pct) <= 1 ? 100 : 1) : lim ? used / lim * 100 : 0; return { p: Math.round(Math.min(100, p)), used }; };
           return `<div class="mlh-rc-cut"></div><div class="mlh-rc-sub">SUBSCRIPTIONS · USED (flat fee, not in the total)</div><div class="mlh-rc-items">${subs.map((x) => { const S = x.last.sub, d = pc(S.d), wk = pc(S.wk), nmx = esc(x.name || "NanoGPT");
             return (d ? line(nmx + " · today", d.p + "%", kTok(d.used) + " tok") : "") + (wk ? line(nmx + " · this week", wk.p + "%", kTok(wk.used) + " tok") : ""); }).join("")}</div>`;
+        })()}
+        ${(() => {
+          const L = apTodayModels(); if (!L.length) return "";
+          const lim = ap.allModels ? L.length : 10, tg = { G: "✓G", site: "✓site", chat: "" };
+          return `<div class="mlh-rc-cut"></div><div class="mlh-rc-sub">TODAY · EVERY MODEL (${L.length})</div><div class="mlh-rc-items">${L.slice(0, lim).map((x) => line(`${tg[x.src] ? `<u>${tg[x.src]}</u> ` : ""}${esc(x.name)} <small>· ${esc(x.site)}</small>`, x.cost == null ? "?" : show(x.cost), x.n ? x.n + "×" : kTok(x.tok || 0))).join("")}</div>${L.length > 10 ? `<button type="button" class="mlh-link" data-apall>${ap.allModels ? "Show less" : `Show all ${L.length}`}</button>` : ""}`;
         })()}
         ${top.length ? `<div class="mlh-rc-cut"></div><div class="mlh-rc-sub">TOP MODELS IN CHATS · MONTH</div><div class="mlh-rc-items">${top.map(([m, x]) => line(esc(m), x.priced ? show(x.cost) : "?", `${x.n}×`)).join("")}</div>` : ""}
         ${(() => { const miss = new Set(); for (const [n, x] of Object.entries(M.models)) if (!x.priced) miss.add(n); if (ap.gm?.month) for (const [m, r] of Object.entries(ap.gm.month)) if (r[0] + r[1] > 0 && apCost("google_vertex" + SEP + m, r[0], r[1]) == null) miss.add(m); return miss.size ? `<div class="mlh-rc-note">✎ no price yet: ${[...miss].slice(0, 6).map(esc).join(", ")}${miss.size > 6 ? "…" : ""} — add it in Edit</div>` : ""; })()}
@@ -2046,6 +2114,7 @@
   }
   function apClick(t) {
     if (t.closest("[data-apre]")) { apScan(true); return true; }
+    if (t.closest("[data-apall]")) { ap.allModels = !ap.allModels; render(); return true; }
     const cr = t.closest("[data-crre]"); if (cr) {
       const w = widById(cr.dataset.crre);
       if (w) { if (w.mon) w.mon.chk = 0; if (w.mode === "gc" && !w.sa && hasG(w) && !oValid(w)) gSignIn(w); else crLookup(w); }
