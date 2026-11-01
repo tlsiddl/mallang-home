@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   /* ══════════════════════════════════════════════════════════
-   *  말랑 홈 (공유판) v1.35.1 · Celestial Editorial
+   *  말랑 홈 (공유판) v1.35.2 · Celestial Editorial
    *  마리나라 기본 홈(HomeBrowserHub.HomePage) 안에 새 홈을 그리고
    *  기본 내용은 숨긴다. 기본 홈의 버튼(새 채팅·최근 채팅 카드)은
    *  DOM에 그대로 남겨 두고 대신 눌러 주는 방식이라 앱 기능을 건드리지 않는다.
@@ -1264,7 +1264,7 @@
   const toUSD = (v, cur) => cur === "KRW" ? v / usdKrw() : cur === "CNY" ? v * cnyKrw() / usdKrw() : v;
   const fromUSD = (v, cur) => cur === "KRW" ? v * usdKrw() : cur === "CNY" ? v * usdKrw() / cnyKrw() : v;
   const CUR_SYM = { USD: "$", KRW: "₩", CNY: "CN¥" };
-  const fmtCur = (v, cur) => cur === "KRW" ? "₩" + Math.round(v).toLocaleString("ko-KR") : (CUR_SYM[cur] || "$") + (v >= 100 ? v.toFixed(0) : v >= 1 ? v.toFixed(2) : v.toFixed(3));
+  const fmtCur = (v, cur) => v > 0 && v < (cur === "KRW" ? 0.5 : 0.0005) ? "<" + (cur === "KRW" ? "₩1" : (CUR_SYM[cur] || "$") + "0.001") : cur === "KRW" ? "₩" + Math.round(v).toLocaleString("ko-KR") : (CUR_SYM[cur] || "$") + (v >= 100 ? v.toFixed(0) : v >= 1 ? v.toFixed(2) : v.toFixed(3));
 
   /* ── 기본 단가 (공식 가격, 100만 토큰당 $) — 2026-10 기준 · 사이트마다 고쳐 적으면 그게 우선 ── */
   const DEF_PRICES = [
@@ -1769,8 +1769,8 @@
               if (!nu || !win) return "";
               const lim = Number(win.lim) || (Number(win.used) + Number(win.rem)) || 0; if (!lim) return "";
               const by = {};
-              for (const [day, D] of Object.entries(nu.days)) { if (day < fromDay) continue; for (const [mdl, r] of Object.entries(D)) if (!(r.c > 0)) by[mdl] = (by[mdl] || 0) + r.i; }
-              return Object.entries(by).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]).map(([mdl, v]) => line(`<small>└ ${esc(mdl)}</small>`, Math.round(v / lim * 1000) / 10 + "%", kTok(v) + " in")).join("");
+              for (const [day, D] of Object.entries(nu.days)) { if (day < fromDay) continue; for (const [mdl, r] of Object.entries(D)) if (!(r.c >= 0.0005)) { const v = r.i || (r.i + r.o + r.th); by[mdl] = by[mdl] || { v: 0, n: 0 }; by[mdl].v += v; by[mdl].n += r.n; } }
+              return Object.entries(by).filter(([, x]) => x.v > 0 || x.n > 0).sort((a, b) => b[1].v - a[1].v).map(([mdl, x]) => { const p = x.v / lim * 100; return line(`<small>└ ${esc(mdl)}</small>`, x.v ? (p < 0.1 ? "<0.1%" : Math.round(p * 10) / 10 + "%") : "—", x.v ? kTok(x.v) + " in" : x.n + " calls"); }).join("");
             };
             const wkFrom = S.wk?.reset ? new Date(Number(S.wk.reset) - 7 * 86400000).toISOString().slice(0, 10) : "";
             return (d ? line(nmx + " · today", d.p + "%", kTok(d.used) + " tok") + share(S.d, nu?.today || "") : "") + (wk ? line(nmx + " · this week", wk.p + "%", kTok(wk.used) + " tok") + share(S.wk, wkFrom) : ""); }).join("")}</div>`;
