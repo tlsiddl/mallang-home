@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   /* ══════════════════════════════════════════════════════════
-   *  말랑 홈 (공유판) v1.32.1 · Celestial Editorial
+   *  말랑 홈 (공유판) v1.32.2 · Celestial Editorial
    *  마리나라 기본 홈(HomeBrowserHub.HomePage) 안에 새 홈을 그리고
    *  기본 내용은 숨긴다. 기본 홈의 버튼(새 채팅·최근 채팅 카드)은
    *  DOM에 그대로 남겨 두고 대신 눌러 주는 방식이라 앱 기능을 건드리지 않는다.
@@ -1498,12 +1498,32 @@
     return all.filter((c) => hostOf(c.baseUrl || "") === h || String(c.baseUrl || "").includes(h));
   }
   // 중계 카드: 기록을 시작하기 전 몫을 마리나라 기록으로 (사이트 통화)
+  // 이 사이트로 보낸 기록 고르기: 연결 종류 + 그 연결의 모델 이름 (연결에 모델이 없으면 종류만)
+  function relayMatcher(w) {
+    const cs = relayConns(w), pairs = new Set(), anyOf = new Set();
+    for (const c of cs) { if (!c.provider) continue; if (c.model) pairs.add(c.provider + SEP + nm(c.model)); else anyOf.add(c.provider); }
+    return (m) => pairs.has(apProv(m) + SEP + nm(apModelName(m))) || anyOf.has(apProv(m));
+  }
+  // 이 사이트 가격(사이트 통화): 내가 적은 값 → 사이트 가격표(링크API면 그 표 × 곱하기) → 공식 × 곱하기
+  function relayCost(w, m, p, o, n) {
+    const P = apw(), own = P.price[m];
+    if (own && own.some((x) => x !== "" && x != null)) return fromUSD(apCost(m, p, o, n) || 0, w.cur === "CNY" ? "CNY" : "USD");
+    const name = apModelName(m), key = nm(name), linky = /linkapi/i.test(hostOf(w.url)), mul = Number(w.mul) > 0 ? Number(w.mul) : linky ? 1.6 : 1, noMul = /-r$/i.test(name.trim());
+    const cur = w.cur === "CNY" ? "CNY" : "USD";
+    if (linky) {
+      if (/^\[free\]/i.test(key)) return 0;
+      if (LINK_C2[key] != null) return n * LINK_C2[key];
+      if (LINK_T2[key]) return (p * LINK_T2[key][0] + o * LINK_T2[key][1]) / 1e6 * (noMul ? 1 : mul);
+    }
+    const d = defPrice(name.replace(/^\s*\[[^\]]+\]\s*/, "")); if (!d) return 0;
+    return fromUSD((p * d[0] + o * d[1]) / 1e6, cur) * (noMul ? 1 : mul);
+  }
   function relayFill(w, from, to) {
-    const provs = new Set(relayConns(w).map((c) => c.provider)); if (!provs.size || !(to > from)) return 0;
-    let usdV = 0;
+    if (!(to > from)) return 0;
+    const hit = relayMatcher(w); let v = 0;
     for (const [k, H] of Object.entries(ap.hours)) { const t = Date.parse(k + ":00:00"); if (t < from || t >= to) continue;
-      for (const [m, r] of Object.entries(H)) if (provs.has(apProv(m))) usdV += apCost(m, r[0], r[1], r[2]) || 0; }
-    return fromUSD(usdV, w.cur === "CNY" ? "CNY" : "USD");
+      for (const [m, r] of Object.entries(H)) if (hit(m)) v += relayCost(w, m, r[0], r[1], r[2]); }
+    return v;
   }
   function relayPeriods(w) {
     const L = w.last; if (!L) return null;
@@ -1515,24 +1535,25 @@
   function apTotals() {
     const now = new Date(), t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime(), m0 = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
     const T = apSum(t0), M = apSum(m0), rows = {};
-    const shortName = (prov) => (data.conns || []).find((c) => c.provider === prov)?.name || PROV_NAME[prov] || prov || "Other";
+    const relayHosts = new Set(wid().filter((x) => x.kind === "credit" && x.mode === "relay").map((x) => hostOf(x.url)).filter(Boolean));
+    const shortName = (prov) => (data.conns || []).find((c) => c.provider === prov && !relayHosts.has(hostOf(c.baseUrl || "")))?.name || PROV_NAME[prov] || prov || "Other";
     const row = (prov) => rows[prov] || (rows[prov] = { prov, name: shortName(prov), t: 0, m: 0, src: "chat", tn: 0, mn: 0, un: 0 });
     for (const [p, s] of Object.entries(T.sites)) { const r = row(p); r.t = s.cost; r.tn = s.n; }
     for (const [p, s] of Object.entries(M.sites)) { const r = row(p); r.m = s.cost; r.mn = s.n; r.un = s.unpriced; }
     if (ap.gm?.month) { const r = row("google_vertex"), a = monCost(ap.gm.today), b = monCost(ap.gm.month); r.t = a.c; r.m = b.c; r.src = "google"; r.un = b.un; }
     for (const w of wid()) {
       if (w.kind !== "credit" || w.mode !== "relay" || !w.last || !(w.last.acct || w.last.trk)) continue;
-      const provs = [...new Set(relayConns(w).map((c) => c.provider).filter(Boolean))]; if (!provs.length) continue;
-      const cur = w.cur === "CNY" ? "CNY" : "USD";
-      // 같은 사이트의 공급자 칸이 여러 개면 첫 칸에 사이트 합계를 넣고 나머지는 비움(겹쳐 세지 않게)
-      const PR = relayPeriods(w) || {};
-      provs.forEach((p, i) => {
-        const r = row(p);
-        if (i === 0) { if (PR.month != null) { r.m = toUSD(PR.month, cur); r.src = "site"; r.un = 0; r.name = w.name || "Relay"; } if (PR.today != null) r.t = toUSD(PR.today, cur); }
-        else if (w.last.month != null) delete rows[p];
-      });
+      if (!relayConns(w).length) continue;
+      const cur = w.cur === "CNY" ? "CNY" : "USD", hit = relayMatcher(w), PR = relayPeriods(w) || {};
+      // 이 사이트로 보낸 채팅 몫은 종류별 칸에서 빼고, 사이트가 센 금액으로 따로 한 줄
+      const now = new Date(), t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime(), m0 = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+      for (const [k, H] of Object.entries(ap.hours)) { const t = Date.parse(k + ":00:00"); if (t < m0) continue;
+        for (const [m, r] of Object.entries(H)) { if (!hit(m)) continue; const c = apCost(m, r[0], r[1], r[2]) || 0, R2 = rows[apProv(m)]; if (!R2) continue; R2.m -= c; if (t >= t0) R2.t -= c; R2.mn -= r[2]; } }
+      const r = row("relay:" + w.id);
+      r.name = w.name || hostOf(w.url) || "Relay"; r.src = "site"; r.m = toUSD(PR.month || 0, cur); r.t = toUSD(PR.today || 0, cur);
     }
-    const list = Object.values(rows).filter((r) => r.t || r.m || r.mn || r.src !== "chat").sort((a, b) => b.m - a.m);
+    for (const r of Object.values(rows)) { if (Math.abs(r.m) < 1e-9) r.m = 0; if (Math.abs(r.t) < 1e-9) r.t = 0; r.m = Math.max(0, r.m); r.t = Math.max(0, r.t); }
+    const list = Object.values(rows).filter((r) => r.t || r.m || r.mn > 0 || r.src !== "chat").sort((a, b) => b.m - a.m);
     return { T, M, list, today: list.reduce((a, r) => a + r.t, 0), month: list.reduce((a, r) => a + r.m, 0), un: list.reduce((a, r) => a + r.un, 0) };
   }
 
@@ -1872,6 +1893,7 @@
           ${fld("tok", "Access token (optional — some sites block it in the browser)", "password", "the long token from your account page", 'autocomplete="off"')}
           ${fld("uid", "User ID — shown on the same page", "text", "e.g. 1234", 'autocomplete="off" inputmode="numeric"')}
           ${fld("key", "API keys — every key you use with this site, separated by spaces", "password", "sk-aaa sk-bbb …", 'autocomplete="off"')}
+          ${fld("mul", "Price multiplier for estimates (LinkAPI: 1.6 · not for per-call or -r models)", "number", /linkapi/i.test(hostOf(w.url)) ? "1.6" : "1", 'min="0" step="any"')}
           ${fld("rbal", "Balance now — as shown on the site (then it counts down by itself)", "number", "e.g. 97.62", 'min="0" step="any" inputmode="decimal"')}
           ${chips("Currency", "crcur", w, "cur", [["USD", "$"], ["CNY", "CN¥"]])}
           <label class="mlh-wxset"><span class="mlh-ptl">Marinara connections for this site (the receipt uses the site's own total for them)</span><select class="mlh-input" data-crconn="${w.id}"><option value="">Auto — ${(() => { const n = w.conn ? 0 : relayConns(w).length; return w.conn ? "match by site address" : n ? `${n} connection${n > 1 ? "s" : ""} use ${esc(hostOf(w.url))}` : "no connection uses this address yet"; })()}</option>${(data.conns || []).filter((c) => !/nano|google|anthropic|claude/i.test(String(c.provider || ""))).map((c) => `<option value="${esc(c.id)}"${w.conn === c.id ? " selected" : ""}>${esc(c.name || c.model || c.id)} · ${esc(c.provider)}</option>`).join("")}</select></label>
