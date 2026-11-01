@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   /* ══════════════════════════════════════════════════════════
-   *  말랑 홈 (공유판) v1.31.0 · Celestial Editorial
+   *  말랑 홈 (공유판) v1.31.1 · Celestial Editorial
    *  마리나라 기본 홈(HomeBrowserHub.HomePage) 안에 새 홈을 그리고
    *  기본 내용은 숨긴다. 기본 홈의 버튼(새 채팅·최근 채팅 카드)은
    *  DOM에 그대로 남겨 두고 대신 눌러 주는 방식이라 앱 기능을 건드리지 않는다.
@@ -1700,17 +1700,18 @@
       }
       const base = String(w.url || "").trim().replace(/\/+$/, "").replace(/\/v1$/, ""), key = String(w.key || "").trim();
       const tok = String(w.tok || "").trim(), uid = String(w.uid || "").trim();
-      if (!base || (!key && !(tok && uid))) { w.last = { at: Date.now(), err: "Add the site address and an access token (or key) in Edit" }; return; }
+      if (!base || (!key && !tok)) { w.last = { at: Date.now(), err: "Add the site address and an access token (or key) in Edit" }; return; }
       // ① 계정 접근 토큰 (New API: 개인 설정 → 시스템 접근 토큰) — 계정 잔액과 기간별 사용액이 정확
-      if (tok && uid) {
+      let acctErr = "";
+      if (tok) {
         try {
           let qpu = 500000, mul = 1, cur = "USD";
           try { const st = (await getJ(base + "/api/status"))?.data || {}; qpu = Number(st.quota_per_unit) || qpu;
             const dt = String(st.quota_display_type || "").toUpperCase(); if (dt === "CNY") { cur = "CNY"; mul = Number(st.usd_exchange_rate) || 1; } } catch {}
           const conv = (q) => (Number(q) || 0) / qpu * mul;
-          const h = { Authorization: "Bearer " + tok, "New-Api-User": uid };
+          const h = { Authorization: "Bearer " + tok, ...(uid ? { "New-Api-User": uid } : {}) };
           const me = await getJ(base + "/api/user/self", { headers: h });
-          if (me && me.success === false) throw new Error(me.message || "refused");
+          if (me && me.success === false) throw new Error((me.message || "refused") + (uid ? "" : " — try adding your User ID"));
           const rem = conv(me.data?.quota), used = conv(me.data?.used_quota);
           const now = new Date(), sec = (t) => Math.floor(t / 1000);
           const stat = async (from) => { const j = await getJ(`${base}/api/log/self/stat?type=0&start_timestamp=${sec(from)}&end_timestamp=${sec(Date.now())}`, { headers: h }); if (j && j.success === false) throw new Error(j.message || "refused"); return conv(j.data?.quota); };
@@ -1719,7 +1720,7 @@
           if (!w.curSet) w.cur = cur;
           w.last = { at: Date.now(), total: rem + used, used, rem, month, today, acct: true };
           return;
-        } catch (e) { w.last = { at: Date.now(), err: "Account: " + errText(e) }; if (!key) return; }
+        } catch (e) { acctErr = "Access token: " + errText(e); w.last = { at: Date.now(), err: acctErr }; if (!key) return; }
       }
       // ② API 키만 있을 때 — 키 한도·이 키가 쓴 총액만 알 수 있음
       try {
@@ -1729,7 +1730,7 @@
         const total = Number(s.hard_limit_usd ?? s.system_hard_limit_usd), used = Number(u.total_usage) / 100;
         if (!(total >= 0) || !(used >= 0)) throw new Error("unexpected answer");
         // 한도 없는 키는 1억으로 나와서 잔액이 아님 → 이 키 총 사용액만
-        w.last = total >= 1e7 ? { at: Date.now(), keyOnly: true, used } : { at: Date.now(), total, used, rem: Math.max(0, total - used), keyLimit: true };
+        w.last = total >= 1e7 ? { at: Date.now(), keyOnly: true, used, acctErr } : { at: Date.now(), total, used, rem: Math.max(0, total - used), keyLimit: true, acctErr };
       } catch (e) { w.last = { at: Date.now(), err: (w.last?.err ? w.last.err + " · " : "") + errText(e) }; }
     } finally { w.busy = false; savePrefs(); render(); }
   }
@@ -1738,7 +1739,7 @@
     if (wid().some((w) => w.kind === "credit" && w.mode === "gc" && !w.sa && w.gcid)) gisLoad().catch(() => {});
     for (const w of wid()) {
       if (w.kind !== "credit" || w.busy) continue;
-      const ready = w.mode === "relay" ? w.url && (w.key || (w.tok && w.uid)) : w.mode === "nano" ? w.key || w.conn : w.at && (w.sa || (hasG(w) && oValid(w)));
+      const ready = w.mode === "relay" ? w.url && (w.key || w.tok) : w.mode === "nano" ? w.key || w.conn : w.at && (w.sa || (hasG(w) && oValid(w)));
       const last = w.mode === "gc" ? w.mon?.chk || 0 : w.last?.at || 0;
       if (ready && Date.now() - last > 30 * 60000) crLookup(w);
     }
@@ -1791,7 +1792,8 @@
       chk = L.at || 0;
     } else if (w.last && w.last.keyOnly) {
       sub = `this key has used ${money(w.last.used)} in total`;
-      warn = "This key has no spending limit, so it can't show the account balance. Add the site's access token in Edit to see the balance and today / this month.";
+      warn = w.last.acctErr ? "" : "This key has no spending limit, so it can't show the account balance. Add the site's access token in Edit to see the balance and today / this month.";
+      if (w.last.acctErr) err = w.last.acctErr;
       chk = w.last.at;
     } else if (w.last && !w.last.err && w.last.total >= 0) {
       total = w.last.total; rem = w.last.rem; sub = w.last.acct ? `used ${money(w.last.used)} in total` : `this key: used ${money(w.last.used)} of its ${money(w.last.total)} limit`;
