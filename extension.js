@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   /* ══════════════════════════════════════════════════════════
-   *  말랑 홈 (공유판) v1.33.0 · Celestial Editorial
+   *  말랑 홈 (공유판) v1.33.1 · Celestial Editorial
    *  마리나라 기본 홈(HomeBrowserHub.HomePage) 안에 새 홈을 그리고
    *  기본 내용은 숨긴다. 기본 홈의 버튼(새 채팅·최근 채팅 카드)은
    *  DOM에 그대로 남겨 두고 대신 눌러 주는 방식이라 앱 기능을 건드리지 않는다.
@@ -1447,11 +1447,13 @@
     if (own && (has(own[0]) || has(own[1]) || has(own[2]))) return { pin: toUSD(Number(own[0]) || 0, c), pout: toUSD(Number(own[1]) || 0, c), pcall: toUSD(Number(own[2]) || 0, c), src: "set" };
     const old = P.price[name];
     if (old && (Number(old[0]) > 0 || Number(old[1]) > 0)) return { pin: Number(old[0]) || 0, pout: Number(old[1]) || 0, pcall: 0, src: "set" };
+    const rw = relayFor(m); if (rw) return { relay: rw, src: "relay" };
     const d = siteDefault(prov || "", name);
     return d ? { pin: toUSD(d.pin, c), pout: toUSD(d.pout, c), pcall: toUSD(d.pcall, c), src: d.src } : null;
   }
   function apCost(m, p, o, n = 0) {
     const pr = apPrice(m); if (!pr) return null;
+    if (pr.relay) return toUSD(relayCost(pr.relay, m, p, o, n), pr.relay.cur === "CNY" ? "CNY" : "USD");
     return (p * pr.pin + o * pr.pout) / 1e6 + n * pr.pcall;
   }
   // 기간(시작 시각~) 합계 — filter(m)로 모델 거르기 · 금액은 $
@@ -1533,6 +1535,15 @@
     } catch (e) { w.lp = { at: Date.now(), rows: w.lp?.rows || null, n: w.lp?.n || 0, err: errText(e) }; }
     savePrefs(); render();
   }
+  let relayMemo = { key: "", list: [] };
+  function relayFor(m) {
+    const ws = wid().filter((x) => x.kind === "credit" && x.mode === "relay" && x.url);
+    if (!ws.length) return null;
+    const key = (data.conns || []).length + "|" + ws.map((x) => x.id + x.url + (x.conn || "")).join(",");
+    if (relayMemo.key !== key) relayMemo = { key, list: ws.map((x) => [x, relayMatcher(x)]) };
+    for (const [x, hit] of relayMemo.list) if (hit(m)) return x;
+    return null;
+  }
   // 이 사이트로 보낸 기록 고르기: 연결 종류 + 그 연결의 모델 이름 (연결에 모델이 없으면 종류만)
   function relayMatcher(w) {
     const cs = relayConns(w), pairs = new Set(), anyOf = new Set();
@@ -1577,7 +1588,13 @@
     const row = (prov) => rows[prov] || (rows[prov] = { prov, name: shortName(prov), t: 0, m: 0, src: "chat", tn: 0, mn: 0, un: 0 });
     for (const [p, s] of Object.entries(T.sites)) { const r = row(p); r.t = s.cost; r.tn = s.n; }
     for (const [p, s] of Object.entries(M.sites)) { const r = row(p); r.m = s.cost; r.mn = s.n; r.un = s.unpriced; }
-    if (ap.gm?.month) { const r = row("google_vertex"), a = monCost(ap.gm.today), b = monCost(ap.gm.month); r.t = a.c; r.m = b.c; r.src = "google"; r.un = b.un; }
+    if (ap.gm?.month) {
+      const r = row("google_vertex"), a = monCost(ap.gm.today), b = monCost(ap.gm.month); r.t = a.c; r.m = b.c; r.src = "google"; r.un = b.un; r.name = "Vertex AI";
+      const vx = (data.conns || []).filter((c) => c.provider !== "google_vertex" && /aiplatform\.googleapis\.com|vertex/i.test(String(c.baseUrl || "") + " " + String(c.name || "")) && /aiplatform\.googleapis\.com/i.test(String(c.baseUrl || "")));
+      const pairs = new Set(vx.map((c) => c.provider + SEP + nm(c.model || ""))), anyP = new Set(vx.filter((c) => !c.model).map((c) => c.provider));
+      for (const [k, H] of Object.entries(ap.hours)) { const t = Date.parse(k + ":00:00"); if (t < m0) continue;
+        for (const [m, x] of Object.entries(H)) { if (!(pairs.has(apProv(m) + SEP + nm(apModelName(m))) || anyP.has(apProv(m)))) continue; const R2 = rows[apProv(m)]; if (!R2 || apProv(m) === "google_vertex") continue; const c = apCost(m, x[0], x[1], x[2]) || 0; R2.m -= c; if (t >= t0) R2.t -= c; R2.mn -= x[2]; if (c === 0 && apCost(m, x[0], x[1], x[2]) == null) R2.un -= x[2]; } }
+    }
     for (const w of wid()) {
       if (w.kind !== "credit" || w.mode !== "relay" || !w.last || !(w.last.acct || w.last.trk)) continue;
       if (!relayConns(w).length) continue;
@@ -1589,6 +1606,8 @@
       const r = row("relay:" + w.id);
       r.name = w.name || hostOf(w.url) || "Relay"; r.src = "site"; r.m = toUSD(PR.month || 0, cur); r.t = toUSD(PR.today || 0, cur);
     }
+    // 직접 표시한 "Vertex에 이미 포함" 사이트는 구글 모니터링이 있을 때 빼기
+    if (ap.gm?.month) for (const [p, on] of Object.entries(apw().inVx || {})) if (on && p !== "google_vertex" && rows[p]) delete rows[p];
     for (const r of Object.values(rows)) { if (Math.abs(r.m) < 1e-9) r.m = 0; if (Math.abs(r.t) < 1e-9) r.t = 0; r.m = Math.max(0, r.m); r.t = Math.max(0, r.t); }
     const list = Object.values(rows).filter((r) => r.t || r.m || r.mn > 0 || r.src !== "chat").sort((a, b) => b.m - a.m);
     return { T, M, list, today: list.reduce((a, r) => a + r.t, 0), month: list.reduce((a, r) => a + r.m, 0), un: list.reduce((a, r) => a + r.un, 0) };
@@ -1623,6 +1642,7 @@
           ${sites.map(([prov, models]) => `<div class="mlh-rc-site"><div class="mlh-rc-sitehead"><b>${esc(siteName(prov))}</b>${chips("", "apscur", { id: w.id, cur: siteCur(prov) }, "cur", [["USD", "$"], ["CNY", "CN¥"], ["KRW", "₩"]]).replace(/data-wa="apscur"/g, `data-wa="apscur" data-prov="${esc(prov)}"`)}</div>
             <div class="mlh-rc-sitehead">${chips("Price list", "appre", { id: w.id, pre: sitePre(prov) }, "pre", [["", "Official"], ["linkapi", "LinkAPI"]]).replace(/data-wa="appre"/g, `data-wa="appre" data-prov="${esc(prov)}"`)}
               <label class="mlh-rc-mul">× <input class="mlh-input" type="number" min="0" step="any" data-apmul="${esc(prov)}" value="${esc(apw().siteMul?.[prov] ?? "")}" placeholder="${siteMul(prov)}"></label></div>
+            ${prov !== "google_vertex" ? `<div class="mlh-rc-sitehead"><button type="button" class="mlh-link" data-wa="apinvx" data-wid="${w.id}" data-prov="${esc(prov)}" aria-pressed="${!!apw().inVx?.[prov]}">${apw().inVx?.[prov] ? "☑" : "☐"} This is Vertex too — already in Google's count (✓G)</button></div>` : ""}
             <div class="mlh-rc-prices">${models.map((m) => priceRow(prov, m)).join("")}</div></div>`).join("") || `<div class="mlh-empty">Models show up here after your first reply ♡</div>`}
           <div class="mlh-empty">Grey numbers are the defaults: official prices (Oct 2026) or the LinkAPI list, already multiplied by × (not for per-call models or names ending in -r). Numbers you type are used as they are.</div></div>
         <div class="mlh-empty">Vertex uses Google's own count when the Google Cloud card is connected; relay sites use the site's own spending when its card has a connection picked. Everything else counts chat replies and rerolls in Marinara.</div>
@@ -1637,11 +1657,11 @@
         <div class="mlh-rc-big"><span>TODAY</span><b>${A.list.length ? show(A.today) : "—"}</b><em>${A.list.length ? sub(A.today) : "no requests yet"}</em></div>
         <div class="mlh-rc-cut"></div>
         ${line("This month", A.list.length ? show(A.month) : "—", A.list.length ? sub(A.month) : "")}
-        ${A.month ? line("Month-end est.", show(est), sub(est)) : ""}
+        ${A.month && el >= 3 ? line("Month-end est.", show(est), sub(est)) : A.month ? line("Month-end est.", "—", "from day 3") : ""}
         ${line("Replies today", T.n + "", `${kTok(T.p)}↑ ${kTok(T.o)}↓`)}
         ${A.list.length ? `<div class="mlh-rc-cut"></div><div class="mlh-rc-sub">BY SITE · MONTH (today)</div><div class="mlh-rc-items">${A.list.map((r) => line((tag[r.src] ? `<u>${tag[r.src].trim()}</u> ` : "") + esc(r.name), show(r.m), show(r.t))).join("")}</div>` : ""}
         ${top.length ? `<div class="mlh-rc-cut"></div><div class="mlh-rc-sub">TOP MODELS IN CHATS · MONTH</div><div class="mlh-rc-items">${top.map(([m, x]) => line(esc(m), x.priced ? show(x.cost) : "?", `${x.n}×`)).join("")}</div>` : ""}
-        ${A.un ? `<div class="mlh-rc-note">✎ some models have no price — add it in Edit</div>` : ""}
+        ${(() => { const miss = new Set(); for (const [n, x] of Object.entries(M.models)) if (!x.priced) miss.add(n); if (ap.gm?.month) for (const [m, r] of Object.entries(ap.gm.month)) if (r[0] + r[1] > 0 && apCost("google_vertex" + SEP + m, r[0], r[1]) == null) miss.add(m); return miss.size ? `<div class="mlh-rc-note">✎ no price yet: ${[...miss].slice(0, 6).map(esc).join(", ")}${miss.size > 6 ? "…" : ""} — add it in Edit</div>` : ""; })()}
         ${ap.err ? `<div class="mlh-empty mlh-perr">${esc(ap.err)}</div>` : ""}${ap.gm?.err ? `<div class="mlh-empty mlh-perr">Google: ${esc(ap.gm.err)}</div>` : ""}
         <div class="mlh-rc-foot"><i class="mlh-barcode"></i><span>${ap.busy ? `reading ${ap.done}/${ap.todo || "…"}` : `checked ${esc(scanned)}`}</span><button type="button" class="mlh-wxre" data-apre title="Count again" aria-label="Count again"${ap.busy ? " disabled" : ""}>↻</button></div>
         <div class="mlh-rc-thx">✦ ✓G = counted by Google · ✓site = the site's own total ✦</div>
@@ -2007,6 +2027,7 @@
     else if (a === "crcur") { w.cur = v; w.curSet = true; }
     else if (a === "apdisp") apw().disp = v;
     else if (a === "apscur") { const prov = b.dataset.prov; if (prov != null) apw().siteCur[prov] = v; }
+    else if (a === "apinvx") { const prov = b.dataset.prov, P = apw(); if (prov != null) P.inVx = { ...(P.inVx || {}), [prov]: !P.inVx?.[prov] }; }
     else if (a === "appre") { const prov = b.dataset.prov, P = apw(); if (prov != null) { P.sitePre = { ...(P.sitePre || {}), [prov]: v }; if (PRESETS[v]) { P.siteCur[prov] = PRESETS[v].cur; } } }
     else if (a === "crgcur") { if (w.gcur !== v) { w.gcur = v; w.bal = ""; w.at = ""; w.tot = v === "KRW" ? "" : 300; delete w.mon; } }
     else if (a === "crsax") { delete w.sa; delete w.mon; w.saErr = ""; }
