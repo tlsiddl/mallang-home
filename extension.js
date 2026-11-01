@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   /* ══════════════════════════════════════════════════════════
-   *  말랑 홈 (공유판) v1.26.0 · Celestial Editorial
+   *  말랑 홈 (공유판) v1.27.0 · Celestial Editorial
    *  마리나라 기본 홈(HomeBrowserHub.HomePage) 안에 새 홈을 그리고
    *  기본 내용은 숨긴다. 기본 홈의 버튼(새 채팅·최근 채팅 카드)은
    *  DOM에 그대로 남겨 두고 대신 눌러 주는 방식이라 앱 기능을 건드리지 않는다.
@@ -1424,9 +1424,45 @@
     gTok.set(sa.client_email, { tok: j.access_token, exp: Date.now() + (Number(j.expires_in) || 3600) * 1000 });
     return j.access_token;
   }
+  /* 열쇠 파일을 못 만드는 계정용: 구글 로그인(OAuth) 팝업으로 1시간짜리 토큰 받기 */
+  const G_SCOPE = "https://www.googleapis.com/auth/monitoring.read";
+  const hasG = (w) => !!(w.sa || (w.gcid && w.proj));
+  const gProj = (w) => w.sa?.project_id || String(w.proj || "").trim();
+  const oKey = (w) => "o:" + String(w.gcid || "").trim();
+  const oValid = (w) => { const h = gTok.get(oKey(w)); return !!h && h.exp > Date.now() + 60000; };
+  let gisP = null;
+  function gisLoad() {
+    if (globalThis.google?.accounts?.oauth2) return Promise.resolve();
+    if (gisP) return gisP;
+    gisP = new Promise((res, rej) => {
+      const sc = document.createElement("script"); sc.src = "https://accounts.google.com/gsi/client"; sc.async = true;
+      sc.onload = () => res(); sc.onerror = () => { gisP = null; rej(new Error("Couldn't load Google sign-in")); };
+      document.head.appendChild(sc); cleanups.push(() => sc.remove());
+    });
+    return gisP;
+  }
+  // 반드시 클릭 안에서 바로 불러야 팝업이 안 막힘
+  function gSignIn(w) {
+    const cid = String(w.gcid || "").trim();
+    if (!globalThis.google?.accounts?.oauth2) { w.mon = { ...(w.mon || {}), at: w.at, err: "Loading Google sign-in… tap ↻ again" }; gisLoad().then(render, (e) => { w.mon.err = errText(e); render(); }); render(); return; }
+    const tc = google.accounts.oauth2.initTokenClient({ client_id: cid, scope: G_SCOPE,
+      callback: (r) => {
+        if (!r?.access_token) { w.mon = { ...(w.mon || {}), at: w.at, err: "Google sign-in was cancelled" }; render(); return; }
+        gTok.set(oKey(w), { tok: r.access_token, exp: Date.now() + (Number(r.expires_in) || 3600) * 1000 });
+        if (w.mon) w.mon.err = ""; crLookup(w);
+      },
+      error_callback: (e) => { w.mon = { ...(w.mon || {}), at: w.at, err: e?.type === "popup_closed" ? "Google sign-in was closed" : "Google sign-in: " + (e?.message || e?.type || "failed") }; render(); } });
+    tc.requestAccessToken({ prompt: "" });
+  }
+  async function gAccess(w) {
+    if (w.sa) return gToken(w.sa);
+    const h = gTok.get(oKey(w)); if (h && h.exp > Date.now() + 60000) return h.tok;
+    throw new Error("SIGNIN");
+  }
   // [from, to] 동안 Vertex 모델별 입력·출력 토큰 합계 {model: [in, out]}
-  async function gTokens(sa, fromMs, toMs) {
-    const tok = await gToken(sa), sec = Math.max(60, Math.ceil((toMs - fromMs) / 1000));
+  async function gTokens(w, fromMs, toMs) {
+    const sa = { project_id: gProj(w) };
+    const tok = await gAccess(w), sec = Math.max(60, Math.ceil((toMs - fromMs) / 1000));
     const q = new URLSearchParams();
     q.set("filter", 'metric.type="aiplatform.googleapis.com/publisher/online_serving/token_count"');
     q.set("interval.startTime", new Date(toMs - sec * 1000).toISOString()); q.set("interval.endTime", new Date(toMs).toISOString());
@@ -1448,11 +1484,11 @@
   const addTok = (a, b) => { const o = { ...(a || {}) }; for (const [m, r] of Object.entries(b || {})) { const x = (o[m] || [0, 0]).slice(); x[0] += r[0]; x[1] += r[1]; o[m] = x; } return o; };
   // 모니터링 기록은 6주만 남아서, 일주일 넘게 지난 몫은 접어서(base) 보관
   async function gcMonLoad(w) {
-    const sa = w.sa, at = Date.parse(w.at || ""); if (!sa || !at) return;
+    const at = Date.parse(w.at || ""); if (!hasG(w) || !at) return;
     const mon = w.mon && w.mon.at === w.at ? w.mon : (w.mon = { at: w.at, from: at, base: {}, live: {}, upd: 0 });
     const now = Date.now();
-    if (now - mon.from > 7 * 86400000) { const cut = now - 86400000; mon.base = addTok(mon.base, await gTokens(sa, mon.from, cut)); mon.from = cut; }
-    mon.live = await gTokens(sa, mon.from, now); mon.upd = now; mon.err = "";
+    if (now - mon.from > 7 * 86400000) { const cut = now - 86400000; mon.base = addTok(mon.base, await gTokens(w, mon.from, cut)); mon.from = cut; }
+    mon.live = await gTokens(w, mon.from, now); mon.upd = now; mon.err = "";
   }
   const monSum = (w) => addTok(w.mon?.base, w.mon?.live);
 
@@ -1461,8 +1497,8 @@
     w.busy = true; render();
     try {
       if (w.mode === "gc") {
-        if (!w.sa) return;
-        try { await gcMonLoad(w); } catch (e) { if (w.mon) w.mon.err = errText(e); else w.mon = { at: w.at, err: errText(e) }; }
+        if (!hasG(w)) return;
+        try { await gcMonLoad(w); } catch (e) { const m = e?.message === "SIGNIN" ? "" : errText(e); if (w.mon) w.mon.err = m; else w.mon = { at: w.at, err: m }; }
         if (w.mon) w.mon.chk = Date.now();
         return;
       }
@@ -1496,9 +1532,10 @@
     } finally { w.busy = false; savePrefs(); render(); }
   }
   function crAuto() {
+    if (wid().some((w) => w.kind === "credit" && w.mode === "gc" && !w.sa && w.gcid)) gisLoad().catch(() => {});
     for (const w of wid()) {
       if (w.kind !== "credit" || w.busy) continue;
-      const ready = w.mode === "relay" ? w.key && w.url : w.mode === "nano" ? w.key || w.conn : w.sa && w.at;
+      const ready = w.mode === "relay" ? w.key && w.url : w.mode === "nano" ? w.key || w.conn : w.at && (w.sa || (hasG(w) && oValid(w)));
       const last = w.mode === "gc" ? w.mon?.chk || 0 : w.last?.at || 0;
       if (ready && Date.now() - last > 30 * 60000) crLookup(w);
     }
@@ -1514,7 +1551,7 @@
       total = Number(w.tot) || 300;
       if (w.at && Number(w.bal) >= 0 && w.bal !== "" && w.bal != null) {
         const since = new Date(w.at).toLocaleDateString("en-US", { month: "short", day: "numeric" });
-        if (w.sa && w.mon && w.mon.at === w.at && w.mon.upd) {
+        if (hasG(w) && w.mon && w.mon.at === w.at && w.mon.upd) {
           const T = monSum(w); let cost = 0, tin = 0, tout = 0; const nop = [];
           for (const [m, r] of Object.entries(T)) { tin += r[0]; tout += r[1]; const c = apCost("␟" + m, r[0], r[1]); if (c == null) { if (r[0] + r[1] > 0) nop.push(m); } else cost += c; }
           rem = Math.max(0, Number(w.bal) - cost);
@@ -1526,7 +1563,7 @@
           rem = Math.max(0, Number(w.bal) - S.cost);
           sub = `used since ${since}: ${money(S.cost)} · ${S.n} req`;
           if (S.unpriced) warn = `✎ ${S.unpriced} request${S.unpriced > 1 ? "s" : ""} without a price — set prices on the receipt`;
-          if (w.sa) extra = `<div class="mlh-cr-tag">${w.busy ? "asking Google…" : "Google count not loaded yet — using chat records"}</div>`;
+          if (hasG(w)) extra = `<div class="mlh-cr-tag">${w.busy ? "asking Google…" : !w.sa && !oValid(w) ? "tap ↻ to sign in with Google and count everything — using chat records for now" : "Google count not loaded yet — using chat records"}</div>`;
         }
       }
       if (w.mon?.err) err = "Google: " + w.mon.err;
@@ -1558,12 +1595,16 @@
     const kinds = { gc: () => `${fld("bal", "Remaining now ($) — from the Cloud console", "number", "e.g. 287.40", 'min="0" step="any" inputmode="decimal"')}
           ${fld("tot", "Total credit ($)", "number", "300", 'min="0" step="any"')}
           ${fld("exp", "Expires on", "date", "", "")}
-          <div class="mlh-wxset"><span class="mlh-ptl">Count Vertex with Google (optional)</span>
+          <div class="mlh-wxset"><span class="mlh-ptl">Count Vertex with Google (optional) — sign-in</span></div>
+          ${fld("gcid", "OAuth client ID", "text", "1234…apps.googleusercontent.com", 'autocomplete="off" spellcheck="false"')}
+          ${fld("proj", "Project ID", "text", "e.g. concise-wharf-513208-j1", 'autocomplete="off" spellcheck="false"')}
+          <div class="mlh-empty">Allowed origin for the client ID: <b>${esc(location.origin)}</b></div>
+          <div class="mlh-wxset"><span class="mlh-ptl">…or a service account key file</span>
             ${w.sa ? `<div class="mlh-empty">✓ ${esc(w.sa.client_email)} · ${esc(w.sa.project_id)} <button type="button" class="mlh-link" data-wa="crsax" data-wid="${w.id}">Remove</button></div>`
               : `<textarea class="mlh-input" rows="3" data-cr="sa" data-wid="${w.id}" spellcheck="false" placeholder="Paste the service account key (.json) here"></textarea>`}
             ${w.saErr ? `<div class="mlh-empty mlh-perr">${esc(w.saErr)}</div>` : ""}
           </div>
-          ${w.sa ? "" : chips("Count", "crscope", w, "scope", [["vertex", "Vertex only"], ["google", "All Google"]])}
+          ${hasG(w) ? "" : chips("Count", "crscope", w, "scope", [["vertex", "Vertex only"], ["google", "All Google"]])}
           <div class="mlh-empty">Each time you enter the balance, it starts counting again from now. Costs use the prices on the API receipt.</div>`,
       relay: () => `${fld("url", "Site address", "url", "https://api.linkapi.ai", 'autocomplete="off"')}
           ${fld("key", "API key (saved only in Mallang Home)", "password", "sk-…", 'autocomplete="off"')}
@@ -1583,7 +1624,7 @@
         ${rate > 0 ? `<div class="mlh-cr-won">${won(rem, rate)}</div>` : ""}
         ${total > 0 ? `<div class="mlh-cr-bar"><i style="width:${pct.toFixed(1)}%"></i></div>` : ""}
         ${sub ? `<div class="mlh-cr-sub">${sub}</div>` : ""}`;
-    const canRe = mode !== "gc" || !!w.sa;
+    const canRe = mode !== "gc" || hasG(w);
     return `<section class="mlh-card mlh-crcard" data-mode="${mode}">
       <div class="mlh-card-head"><h2 class="mlh-card-title">Credit</h2><button type="button" class="mlh-link" data-wa="${ed ? "done" : "edit"}" data-wid="${w.id}">${ed ? "Done" : "Edit"}</button></div>
       ${tools}
@@ -1598,7 +1639,11 @@
   }
   function apClick(t) {
     if (t.closest("[data-apre]")) { apScan(true); return true; }
-    const cr = t.closest("[data-crre]"); if (cr) { const w = widById(cr.dataset.crre); if (w) { if (w.mon) w.mon.chk = 0; crLookup(w); } return true; }
+    const cr = t.closest("[data-crre]"); if (cr) {
+      const w = widById(cr.dataset.crre);
+      if (w) { if (w.mon) w.mon.chk = 0; if (w.mode === "gc" && !w.sa && hasG(w) && !oValid(w)) gSignIn(w); else crLookup(w); }
+      return true;
+    }
     const b = t.closest("[data-wa]"); if (!b) return false;
     const a = b.dataset.wa, w = b.dataset.wid ? widById(b.dataset.wid) : null, v = b.dataset.v;
     if (a === "addrcpt") { startOpen = false; if (!wid().some((x) => x.kind === "rcpt")) { const m = { id: newWid(), kind: "rcpt", col: 1, slot: 9 }; wid().push(m); savePrefs(); apScan(true); } render(); return true; }
@@ -1639,7 +1684,8 @@
       else if (k === "tot") w.tot = Math.max(0, Number(v) || 0) || 300;
       else w[k] = v.slice(0, k === "key" ? 300 : 200);
       savePrefs(); render();
-      if (k === "bal") { apScan(true); if (w.sa) crLookup(w); }
+      if (k === "bal") { apScan(true); if (hasG(w)) crLookup(w); }
+      if (k === "gcid" || k === "proj") { delete w.mon; if (k === "gcid") gTok.delete(oKey(w)); if (w.gcid) gisLoad().catch(() => {}); }
       if ((w.mode === "relay" && (k === "url" || k === "key")) || (w.mode === "nano" && k === "key")) { w.last = null; crLookup(w); }
       return true;
     }
