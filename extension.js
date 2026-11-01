@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   /* ══════════════════════════════════════════════════════════
-   *  말랑 홈 (공유판) v1.28.0 · Celestial Editorial
+   *  말랑 홈 (공유판) v1.29.0 · Celestial Editorial
    *  마리나라 기본 홈(HomeBrowserHub.HomePage) 안에 새 홈을 그리고
    *  기본 내용은 숨긴다. 기본 홈의 버튼(새 채팅·최근 채팅 카드)은
    *  DOM에 그대로 남겨 두고 대신 눌러 주는 방식이라 앱 기능을 건드리지 않는다.
@@ -1235,14 +1235,66 @@
      영수증: 채팅 메시지(리롤 포함)에 마리나라가 적어 둔 토큰 수를 모아서, 내가 적은 모델 단가로 금액 계산
      크레딧: 구글 클라우드 = 내가 적은 잔액 − 그 뒤로 구글 모델에 쓴 예상 금액 / 중계 API = 키로 잔액 조회 */
   const AP_PAGE = 100, AP_DAYS_MAX = 92, AP_STALE = 10 * 60000, CR_MAX = 4;
+  const SEP = "␟";
+  // price: "사이트␟모델" → [입력, 출력] (그 사이트 통화, 100만 토큰당) · 옛 키("모델"만)는 달러로 모든 사이트에
+  // siteCur: 사이트별 단가 통화 · disp: 영수증 표시 통화 · fx/fxc: 손으로 적은 환율(비우면 매일 받아 온 환율)
   const apw = () => {
     const p = prefs.apiw && typeof prefs.apiw === "object" ? prefs.apiw : (prefs.apiw = {});
     if (!p.price || typeof p.price !== "object") p.price = {};
-    if (!(Number(p.fx) >= 0)) p.fx = 1400;
-    if (!(Number(p.fxc) >= 0)) p.fxc = 195;
+    if (!p.siteCur || typeof p.siteCur !== "object") p.siteCur = {};
+    if (!p.disp) p.disp = "KRW";
+    if (p.fxv !== 2) { p.fxv = 2; if (Number(p.fx) === 1400) p.fx = ""; if (Number(p.fxc) === 195) p.fxc = ""; }
     return p;
   };
-  const ap = { busy: false, err: "", at: 0, done: 0, todo: 0, from: "", hours: {}, cache: null };
+  /* ── 💱 환율: 하루 한 번 (open.er-api.com → 안 되면 frankfurter) ── */
+  const fxs = { busy: false };
+  async function fxLoad(force) {
+    const P = apw(), r = P.rates;
+    if (fxs.busy || (!force && r && r.day === ymd(new Date()))) return;
+    fxs.busy = true;
+    try {
+      let k = 0, c = 0;
+      try { const j = await getJ("https://open.er-api.com/v6/latest/USD"); k = Number(j.rates?.KRW); c = Number(j.rates?.CNY); } catch {}
+      if (!(k > 0 && c > 0)) { const j = await getJ("https://api.frankfurter.app/latest?from=USD&to=KRW,CNY"); k = Number(j.rates?.KRW); c = Number(j.rates?.CNY); }
+      if (k > 0 && c > 0) { P.rates = { day: ymd(new Date()), at: Date.now(), KRW: k, CNY: c }; savePrefs(); render(); }
+    } catch { /* 다음에 */ } finally { fxs.busy = false; }
+  }
+  const usdKrw = () => { const P = apw(); return Number(P.fx) > 0 ? Number(P.fx) : Number(P.rates?.KRW) || 1400; };
+  const cnyKrw = () => { const P = apw(); return Number(P.fxc) > 0 ? Number(P.fxc) : P.rates?.KRW && P.rates?.CNY ? P.rates.KRW / P.rates.CNY : 195; };
+  const toUSD = (v, cur) => cur === "KRW" ? v / usdKrw() : cur === "CNY" ? v * cnyKrw() / usdKrw() : v;
+  const fromUSD = (v, cur) => cur === "KRW" ? v * usdKrw() : cur === "CNY" ? v * usdKrw() / cnyKrw() : v;
+  const CUR_SYM = { USD: "$", KRW: "₩", CNY: "CN¥" };
+  const fmtCur = (v, cur) => cur === "KRW" ? "₩" + Math.round(v).toLocaleString("ko-KR") : (CUR_SYM[cur] || "$") + (v >= 100 ? v.toFixed(0) : v >= 1 ? v.toFixed(2) : v.toFixed(3));
+
+  /* ── 기본 단가 (공식 가격, 100만 토큰당 $) — 2026-10 기준 · 사이트마다 고쳐 적으면 그게 우선 ── */
+  const DEF_PRICES = [
+    [/opus.?5.?5|opus-5-5/i, [4, 20]], [/opus.?5\b|opus-5(?!\.)/i, [5, 25]], [/opus/i, [5, 25]],
+    [/sonnet.?5/i, [2, 10]], [/sonnet/i, [3, 15]],
+    [/haiku.?5/i, [0.1, 0.5]], [/haiku/i, [1, 5]],
+    [/fable|mythos/i, [10, 50]],
+    [/argon/i, () => Date.now() < Date.parse("2026-12-01T00:00:00-08:00") ? [2, 10] : [4, 20]],
+    [/gemini.?3\.[68].?flash(?!.?lite)/i, () => Date.now() < Date.parse("2027-01-01T00:00:00-08:00") ? [0.75, 3.75] : [1.5, 7.5]],
+    [/gemini.?3\.5.?flash.?lite/i, [0.3, 2.5]], [/gemini.?3\.1.?flash.?lite/i, [0.25, 1.5]],
+    [/gemini.?3\.\d.?pro/i, [2, 12]], [/gemini.?2\.5.?pro/i, [1.25, 10]], [/gemini.?2\.5.?flash.?lite/i, [0.1, 0.4]], [/gemini.?2\.5.?flash/i, [0.3, 2.5]],
+    [/gemma/i, [0.15, 0.6]],
+    [/glm.?[\d.]*.?flash/i, [0.15, 0.5]], [/glm/i, [1.4, 4.4]],
+    [/deepseek/i, [0.3, 1.2]],
+    [/kimi|moonshot/i, [3, 15]],
+  ];
+  function defPrice(model) {
+    for (const [re, v] of DEF_PRICES) if (re.test(model)) return typeof v === "function" ? v() : v;
+    return null;
+  }
+  const PROV_NAME = { google_vertex: "Vertex AI", google: "Google AI Studio", anthropic: "Anthropic", claude_subscription: "Claude (subscription)", openai: "OpenAI-compatible", custom: "Custom", nanogpt: "NanoGPT", openrouter: "OpenRouter", deepseek: "DeepSeek", zai: "Z.ai", xai: "xAI", mistral: "Mistral", cohere: "Cohere", arli: "ArliAI" };
+  // 사이트 이름: 그 공급자로 된 내 연결 이름을 붙여서 (예: "Custom · LinkAPI")
+  function siteName(prov) {
+    const names = (data.conns || []).filter((c) => c.provider === prov).map((c) => c.name).filter(Boolean);
+    const base = PROV_NAME[prov] || prov || "Unknown";
+    return names.length ? `${base} · ${names.slice(0, 2).join(", ")}${names.length > 2 ? "…" : ""}` : base;
+  }
+  const siteCur = (prov) => apw().siteCur[prov] || (prov === "custom" || prov === "openai" ? "USD" : "USD");
+
+  const ap = { busy: false, err: "", at: 0, done: 0, todo: 0, from: "", hours: {}, cache: null, gm: null };
   const AP_LS = "mlh-api-usage-v3";
   function apCache() {
     if (ap.cache) return ap.cache;
@@ -1269,7 +1321,7 @@
       const th = Number(g.tokensReasoning) || 0, gg = /google|gemini|vertex/i.test(String(g.provider || ""));
       const p = Number(g.tokensPrompt) || 0, o = (Number(g.tokensCompletion) || 0) + (gg ? th : 0);
       if (!p && !o) return;
-      const k = hourKey(t), m = `${g.provider || "?"}␟${g.model || "unknown"}`;
+      const k = hourKey(t), m = `${g.provider || "?"}${SEP}${g.model || "unknown"}`;
       const h = out[k] || (out[k] = {}), r = h[m] || (h[m] = [0, 0, 0, 0]);
       r[0] += p; r[1] += o; r[2] += Math.max(1, Number(g.requestCount) || 1); r[3] = (r[3] || 0) + th;
     };
@@ -1290,10 +1342,19 @@
     }
     return out;
   }
+  // Vertex: 구글 카드에 서비스 계정/로그인이 있으면 오늘·이번 달을 구글이 센 토큰으로
+  async function apGoogle() {
+    const w = wid().find((x) => x.kind === "credit" && x.mode === "gc" && hasG(x) && (x.sa || oValid(x)));
+    if (!w) { ap.gm = null; return; }
+    const now = new Date(), t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime(), m0 = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+    try { ap.gm = { today: await gTokens(w, t0, Date.now()), month: await gTokens(w, m0, Date.now()), at: Date.now(), err: "" }; }
+    catch (e) { ap.gm = { ...(ap.gm || {}), err: e?.message === "SIGNIN" ? "" : errText(e) }; }
+  }
   async function apScan(force) {
     if (ap.busy || !wid().some((w) => w.kind === "rcpt" || w.kind === "credit")) return;
     if (!force && Date.now() - ap.at < AP_STALE) return;
     ap.busy = true; ap.err = ""; ap.done = 0; render();
+    fxLoad(false);
     try {
       const from = apFrom(), fromMs = Date.parse(from), cache = apCache();
       if (cache.from !== from) { cache.from = from; cache.chats = {}; }
@@ -1319,28 +1380,39 @@
         for (const [m, r] of Object.entries(ms)) { const R = H[m] || (H[m] = [0, 0, 0, 0]); R[0] += r[0]; R[1] += r[1]; R[2] += r[2]; R[3] += r[3] || 0; }
       }
       ap.hours = hours; ap.from = from; ap.at = Date.now();
+      if (wid().some((w) => w.kind === "rcpt")) await apGoogle();
     } catch (e) { ap.err = "Couldn't read usage: " + (e?.message || e); }
     finally { ap.busy = false; render(); }
   }
-  const apModelName = (m) => m.split("␟")[1] || m;
-  const apProv = (m) => m.split("␟")[0] || "";
-  function apCost(m, p, o) {
-    const pr = apw().price[apModelName(m)];
-    if (!pr || (!(Number(pr[0]) > 0) && !(Number(pr[1]) > 0))) return null;
-    return (p * (Number(pr[0]) || 0) + o * (Number(pr[1]) || 0)) / 1e6;
+  const apModelName = (m) => m.split(SEP)[1] || m;
+  const apProv = (m) => m.includes(SEP) ? m.split(SEP)[0] : "";
+  // 단가 찾기: 사이트별로 적은 값 → 옛 값(모델만, $) → 기본값($). 돌려주는 값은 $ 기준
+  function apPrice(m) {
+    const P = apw(), prov = apProv(m), name = apModelName(m), own = P.price[prov + SEP + name];
+    if (own && (Number(own[0]) > 0 || Number(own[1]) > 0)) { const c = siteCur(prov); return { pin: toUSD(Number(own[0]) || 0, c), pout: toUSD(Number(own[1]) || 0, c), src: "set" }; }
+    const old = P.price[name];
+    if (old && (Number(old[0]) > 0 || Number(old[1]) > 0)) return { pin: Number(old[0]) || 0, pout: Number(old[1]) || 0, src: "set" };
+    const d = defPrice(name);
+    return d ? { pin: d[0], pout: d[1], src: "def" } : null;
   }
-  // 기간(시작 시각~) 합계 — filter(m)로 모델 거르기
+  function apCost(m, p, o) {
+    const pr = apPrice(m); if (!pr) return null;
+    return (p * pr.pin + o * pr.pout) / 1e6;
+  }
+  // 기간(시작 시각~) 합계 — filter(m)로 모델 거르기 · 금액은 $
   function apSum(fromMs, filter) {
-    const tot = { n: 0, p: 0, o: 0, th: 0, cost: 0, unpriced: 0, models: {} };
+    const tot = { n: 0, p: 0, o: 0, th: 0, cost: 0, unpriced: 0, models: {}, sites: {} };
     for (const [k, H] of Object.entries(ap.hours)) {
-      if (Date.parse(k.replace("T", "T") + ":00:00") < fromMs) continue;
+      if (Date.parse(k + ":00:00") < fromMs) continue;
       for (const [m, r] of Object.entries(H)) {
         if (filter && !filter(m)) continue;
-        const c = apCost(m, r[0], r[1]);
+        const c = apCost(m, r[0], r[1]), prov = apProv(m);
         tot.n += r[2]; tot.p += r[0]; tot.o += r[1]; tot.th += r[3] || 0;
         if (c == null) tot.unpriced += r[2]; else tot.cost += c;
         const name = apModelName(m), x = tot.models[name] || (tot.models[name] = { n: 0, p: 0, o: 0, cost: 0, priced: c != null });
         x.n += r[2]; x.p += r[0]; x.o += r[1]; if (c != null) x.cost += c; else x.priced = false;
+        const S = tot.sites[prov] || (tot.sites[prov] = { n: 0, cost: 0, unpriced: 0 });
+        S.n += r[2]; if (c == null) S.unpriced += r[2]; else S.cost += c;
       }
     }
     return tot;
@@ -1348,48 +1420,85 @@
   const kTok = (n) => n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M" : n >= 1e3 ? (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + "k" : String(n | 0);
   const usd = (v) => "$" + (v >= 100 ? v.toFixed(0) : v >= 1 ? v.toFixed(2) : v.toFixed(3));
   const won = (v, rate) => rate > 0 ? "≈₩" + Math.round(v * rate).toLocaleString("ko-KR") : "";
-  const apModels = () => {
-    const s = new Set(Object.keys(apw().price));
-    for (const H of Object.values(ap.hours)) for (const m of Object.keys(H)) s.add(apModelName(m));
-    for (const w of wid()) if (w.kind === "credit" && w.mon) for (const m of Object.keys(monSum(w))) s.add(m);
-    return [...s].sort();
-  };
+  // 사이트별 모델 목록 (마리나라 기록 + 구글 모니터링 + 적어 둔 단가)
+  function apSiteModels() {
+    const by = {};
+    const add = (prov, name) => (by[prov] || (by[prov] = new Set())).add(name);
+    for (const H of Object.values(ap.hours)) for (const m of Object.keys(H)) add(apProv(m), apModelName(m));
+    for (const k of Object.keys(apw().price)) if (k.includes(SEP)) add(apProv(k), apModelName(k));
+    for (const w of wid()) if (w.kind === "credit" && w.mon) for (const m of Object.keys(monSum(w))) add("google_vertex", m);
+    if (ap.gm?.month) for (const m of Object.keys(ap.gm.month)) add("google_vertex", m);
+    return Object.entries(by).sort((a, b) => a[0].localeCompare(b[0])).map(([p, s]) => [p, [...s].sort()]);
+  }
+  const monCost = (T) => { let c = 0, un = 0; for (const [m, r] of Object.entries(T || {})) { const x = apCost("google_vertex" + SEP + m, r[0], r[1]); if (x == null) { if (r[0] + r[1]) un++; } else c += x; } return { c, un }; };
+
+  // 영수증 합계: 사이트마다 가장 정확한 출처 하나만 (겹쳐 세지 않게)
+  //  Vertex = 구글 모니터링(있으면) · 중계 사이트 = 그 사이트가 알려 준 사용액(연결을 골라 둔 경우) · 나머지 = 마리나라 기록 × 단가
+  function apTotals() {
+    const now = new Date(), t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime(), m0 = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+    const T = apSum(t0), M = apSum(m0), rows = {};
+    const shortName = (prov) => (data.conns || []).find((c) => c.provider === prov)?.name || PROV_NAME[prov] || prov || "Other";
+    const row = (prov) => rows[prov] || (rows[prov] = { prov, name: shortName(prov), t: 0, m: 0, src: "chat", tn: 0, mn: 0, un: 0 });
+    for (const [p, s] of Object.entries(T.sites)) { const r = row(p); r.t = s.cost; r.tn = s.n; }
+    for (const [p, s] of Object.entries(M.sites)) { const r = row(p); r.m = s.cost; r.mn = s.n; r.un = s.unpriced; }
+    if (ap.gm?.month) { const r = row("google_vertex"), a = monCost(ap.gm.today), b = monCost(ap.gm.month); r.t = a.c; r.m = b.c; r.src = "google"; r.un = b.un; }
+    for (const w of wid()) {
+      if (w.kind !== "credit" || w.mode !== "relay" || !w.conn || !w.last || w.last.err) continue;
+      const conn = (data.conns || []).find((c) => c.id === w.conn); if (!conn) continue;
+      const r = row(conn.provider), cur = w.cur === "CNY" ? "CNY" : "USD";
+      if (w.last.month != null) { r.m = toUSD(w.last.month, cur); r.src = "site"; r.un = 0; r.name = w.name || conn.name || "Relay"; }
+      if (w.last.today != null) r.t = toUSD(w.last.today, cur);
+    }
+    const list = Object.values(rows).filter((r) => r.t || r.m || r.mn || r.src !== "chat").sort((a, b) => b.m - a.m);
+    return { T, M, list, today: list.reduce((a, r) => a + r.t, 0), month: list.reduce((a, r) => a + r.m, 0), un: list.reduce((a, r) => a + r.un, 0) };
+  }
 
   function rcptHTML(w) {
-    const ed = widEdit === w.id, P = apw(), fx = Number(P.fx) || 0;
-    const now = new Date(), y = now.getFullYear(), mo = now.getMonth();
-    const t0 = new Date(y, mo, now.getDate()).getTime(), m0 = new Date(y, mo, 1).getTime();
-    const T = apSum(t0), M = apSum(m0);
+    const ed = widEdit === w.id, P = apw(), D = P.disp === "USD" ? "USD" : "KRW";
+    const show = (vUSD) => fmtCur(fromUSD(vUSD, D), D), sub = (vUSD) => D === "KRW" ? usd(vUSD) : won(vUSD, usdKrw());
+    const now = new Date(), y = now.getFullYear(), mo = now.getMonth(), m0 = new Date(y, mo, 1).getTime();
+    const A = apTotals(), T = A.T, M = A.M;
     const dim = new Date(y, mo + 1, 0).getDate(), el = Math.max(1, (now.getTime() - m0) / 86400000);
-    const est = M.cost / el * dim;
+    const est = A.month / el * dim;
     const top = Object.entries(M.models).sort((a, b) => (b[1].cost - a[1].cost) || (b[1].n - a[1].n)).slice(0, 5);
-    const need = Object.entries(M.models).filter(([, x]) => !x.priced).length;
     const scanned = ap.at ? new Date(ap.at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }) : "—";
+    const R = P.rates;
+    const priceRow = (prov, name) => {
+      const key = prov + SEP + name, pr = P.price[key] || [], c = siteCur(prov), d = defPrice(name);
+      const ph = (i) => d ? String(+fromUSD(d[i], c).toFixed(c === "KRW" ? 0 : 3)) : i ? "out" : "in";
+      return `<label><span title="${esc(name)}">${esc(name)}</span><input class="mlh-input" type="number" min="0" step="any" inputmode="decimal" data-fk="apr-${esc(key)}-0" data-apr="${esc(key)}" data-i="0" value="${pr[0] ?? ""}" placeholder="${ph(0)}"><input class="mlh-input" type="number" min="0" step="any" inputmode="decimal" data-fk="apr-${esc(key)}-1" data-apr="${esc(key)}" data-i="1" value="${pr[1] ?? ""}" placeholder="${ph(1)}"></label>`;
+    };
+    const sites = apSiteModels();
     const tools = ed ? `<div class="mlh-ptools">${moveTools(w)}
-        <div class="mlh-wxset"><span class="mlh-ptl">Prices · $ per 1M tokens (in / out)</span>
-          <div class="mlh-rc-prices">${apModels().map((m) => { const pr = P.price[m] || []; return `<label><span title="${esc(m)}">${esc(m)}</span><input class="mlh-input" type="number" min="0" step="any" inputmode="decimal" data-fk="apr-${esc(m)}-0" data-apr="${esc(m)}" data-i="0" value="${pr[0] ?? ""}" placeholder="in"><input class="mlh-input" type="number" min="0" step="any" inputmode="decimal" data-fk="apr-${esc(m)}-1" data-apr="${esc(m)}" data-i="1" value="${pr[1] ?? ""}" placeholder="out"></label>`; }).join("") || `<div class="mlh-empty">Models show up here after your first reply ♡</div>`}</div>
-        </div>
-        <label class="mlh-wxset"><span class="mlh-ptl">₩ per $1</span><input class="mlh-input" type="number" min="0" step="any" data-apfx="fx" value="${esc(P.fx)}"></label>
-        <div class="mlh-empty">Counts chat replies and rerolls in Marinara (Gemini thinking tokens included as output). Agents, image tools and other apps aren't included, so it's an estimate.</div>
+        ${chips("Show in", "apdisp", { id: w.id, disp: D }, "disp", [["KRW", "₩ won"], ["USD", "$ dollar"]])}
+        <div class="mlh-wxset"><span class="mlh-ptl">Exchange rate · ${R ? `updated ${esc(R.day)}` : "loading…"}</span>
+          <div class="mlh-rc-fx"><label>₩ per $1<input class="mlh-input" type="number" min="0" step="any" data-apfx="fx" value="${esc(P.fx ?? "")}" placeholder="${R ? Math.round(R.KRW * 100) / 100 : "auto"}"></label>
+          <label>₩ per CN¥1<input class="mlh-input" type="number" min="0" step="any" data-apfx="fxc" value="${esc(P.fxc ?? "")}" placeholder="${R ? Math.round(R.KRW / R.CNY * 100) / 100 : "auto"}"></label></div>
+          <div class="mlh-empty">Leave empty to use today's rate (checked once a day).</div></div>
+        <div class="mlh-wxset"><span class="mlh-ptl">Prices per 1M tokens (in / out) — by site</span>
+          ${sites.map(([prov, models]) => `<div class="mlh-rc-site"><div class="mlh-rc-sitehead"><b>${esc(siteName(prov))}</b>${chips("", "apscur", { id: w.id, cur: siteCur(prov) }, "cur", [["USD", "$"], ["CNY", "CN¥"], ["KRW", "₩"]]).replace(/data-wa="apscur"/g, `data-wa="apscur" data-prov="${esc(prov)}"`)}</div>
+            <div class="mlh-rc-prices">${models.map((m) => priceRow(prov, m)).join("")}</div></div>`).join("") || `<div class="mlh-empty">Models show up here after your first reply ♡</div>`}
+          <div class="mlh-empty">Grey numbers are official prices (Oct 2026). Type your site's own price to replace them — e.g. LinkAPI in CN¥.</div></div>
+        <div class="mlh-empty">Vertex uses Google's own count when the Google Cloud card is connected; relay sites use the site's own spending when its card has a connection picked. Everything else counts chat replies and rerolls in Marinara.</div>
         <div class="mlh-pfoot"><button type="button" class="mlh-link" data-wa="del" data-wid="${w.id}">Turn off</button></div>${delTools(w, "Turn off the receipt?")}</div>` : "";
     const line = (a, b, c = "") => `<div class="mlh-rc-line"><span>${a}</span><i></i><b>${b}</b>${c ? `<em>${c}</em>` : ""}</div>`;
+    const tag = { google: " ✓G", site: " ✓site", chat: "" };
     return `<section class="mlh-card mlh-rcptcard">
       <div class="mlh-card-head"><h2 class="mlh-card-title">API Receipt</h2><button type="button" class="mlh-link" data-wa="${ed ? "done" : "edit"}" data-wid="${w.id}">${ed ? "Done" : "Edit"}</button></div>
       ${tools}
       <div class="mlh-rc">
-        <div class="mlh-rc-head"><b>MALLANG API STORE</b><em>${MON[mo].toUpperCase()} ${y} · MONTHLY</em></div>
-        <div class="mlh-rc-big"><span>TODAY</span><b>${T.n ? usd(T.cost) : "—"}</b><em>${T.n ? won(T.cost, fx) : "no requests yet"}</em></div>
+        <div class="mlh-rc-head"><b>MALLANG API STORE</b><em>${MON[mo].toUpperCase()} ${y} · ALL SITES</em></div>
+        <div class="mlh-rc-big"><span>TODAY</span><b>${A.list.length ? show(A.today) : "—"}</b><em>${A.list.length ? sub(A.today) : "no requests yet"}</em></div>
         <div class="mlh-rc-cut"></div>
-        ${line("Requests today", T.n + "")}
-        ${line("Tokens today", `${kTok(T.p)} ↑ · ${kTok(T.o)} ↓`)}
-        ${T.th ? line("· thinking (in ↓)", kTok(T.th)) : ""}
-        ${line("This month", M.n ? usd(M.cost) : "—", `${M.n} req`)}
-        ${M.n && M.cost ? line("Month-end est.", usd(est), won(est, fx)) : ""}
-        ${top.length ? `<div class="mlh-rc-cut"></div><div class="mlh-rc-items">${top.map(([m, x]) => line(esc(m), x.priced ? usd(x.cost) : "?", `${x.n}×`)).join("")}</div>` : ""}
-        ${need ? `<div class="mlh-rc-note">✎ ${need} model${need > 1 ? "s need" : " needs"} a price — set it in Edit</div>` : ""}
-        ${ap.err ? `<div class="mlh-empty mlh-perr">${esc(ap.err)}</div>` : ""}
+        ${line("This month", A.list.length ? show(A.month) : "—", A.list.length ? sub(A.month) : "")}
+        ${A.month ? line("Month-end est.", show(est), sub(est)) : ""}
+        ${line("Replies today", T.n + "", `${kTok(T.p)}↑ ${kTok(T.o)}↓`)}
+        ${A.list.length ? `<div class="mlh-rc-cut"></div><div class="mlh-rc-sub">BY SITE · MONTH (today)</div><div class="mlh-rc-items">${A.list.map((r) => line((tag[r.src] ? `<u>${tag[r.src].trim()}</u> ` : "") + esc(r.name), show(r.m), show(r.t))).join("")}</div>` : ""}
+        ${top.length ? `<div class="mlh-rc-cut"></div><div class="mlh-rc-sub">TOP MODELS IN CHATS · MONTH</div><div class="mlh-rc-items">${top.map(([m, x]) => line(esc(m), x.priced ? show(x.cost) : "?", `${x.n}×`)).join("")}</div>` : ""}
+        ${A.un ? `<div class="mlh-rc-note">✎ some models have no price — add it in Edit</div>` : ""}
+        ${ap.err ? `<div class="mlh-empty mlh-perr">${esc(ap.err)}</div>` : ""}${ap.gm?.err ? `<div class="mlh-empty mlh-perr">Google: ${esc(ap.gm.err)}</div>` : ""}
         <div class="mlh-rc-foot"><i class="mlh-barcode"></i><span>${ap.busy ? `reading ${ap.done}/${ap.todo || "…"}` : `checked ${esc(scanned)}`}</span><button type="button" class="mlh-wxre" data-apre title="Count again" aria-label="Count again"${ap.busy ? " disabled" : ""}>↻</button></div>
-        <div class="mlh-rc-thx">✦ THANK YOU FOR WRITING ✦</div>
+        <div class="mlh-rc-thx">✦ ✓G = counted by Google · ✓site = the site's own total ✦</div>
       </div>
     </section>`;
   }
@@ -1527,11 +1636,14 @@
         if (!(total >= 0) || !(used >= 0)) throw new Error("unexpected answer");
         let month = null;
         try { const um = await getJ(`${base}/v1/dashboard/billing/usage?start_date=${d.getFullYear()}-${pad2(d.getMonth() + 1)}-01&end_date=${end}`, { headers: h }); month = Number(um.total_usage) / 100; if (!(month >= 0)) month = null; } catch {}
-        w.last = { at: Date.now(), total, used, rem: Math.max(0, total - used), month };
+        let today = null;
+        try { const ut = await getJ(`${base}/v1/dashboard/billing/usage?start_date=${ymd(d)}&end_date=${end}`, { headers: h }); today = Number(ut.total_usage) / 100; if (!(today >= 0)) today = null; } catch {}
+        w.last = { at: Date.now(), total, used, rem: Math.max(0, total - used), month, today };
       } catch (e) { w.last = { at: Date.now(), err: errText(e) }; }
     } finally { w.busy = false; savePrefs(); render(); }
   }
   function crAuto() {
+    if (wid().some((w) => w.kind === "credit" || w.kind === "rcpt")) fxLoad(false);
     if (wid().some((w) => w.kind === "credit" && w.mode === "gc" && !w.sa && w.gcid)) gisLoad().catch(() => {});
     for (const w of wid()) {
       if (w.kind !== "credit" || w.busy) continue;
@@ -1546,8 +1658,8 @@
     const ed = widEdit === w.id, P = apw(), mode = w.mode;
     // 구글 콘솔이 원화로 보여 주면 원화로: 잔액·총액은 ₩, 사용 금액($ 단가)은 구글 환율로 바꿔서 뺌
     const KRW = mode === "gc" && w.gcur === "KRW";
-    const gRate = Number(w.grate) || (KRW && Number(w.tot) > 1000 ? Number(w.tot) / 300 : Number(P.fx) || 1400);
-    const cur = KRW ? "₩" : mode === "relay" && w.cur === "CNY" ? "CN¥" : "$", rate = KRW ? 0 : cur === "CN¥" ? Number(P.fxc) || 0 : Number(P.fx) || 0;
+    const gRate = Number(w.grate) || (KRW && Number(w.tot) > 1000 ? Number(w.tot) / 300 : usdKrw());
+    const cur = KRW ? "₩" : mode === "relay" && w.cur === "CNY" ? "CN¥" : "$", rate = KRW ? 0 : cur === "CN¥" ? cnyKrw() : usdKrw();
     const money = KRW ? (v) => "₩" + Math.round(v).toLocaleString("ko-KR") : (v) => cur + (v >= 1000 ? Math.round(v).toLocaleString("en-US") : v.toFixed(2));
     const toG = (usdV) => KRW ? usdV * gRate : usdV;
     let total = 0, rem = null, sub = "", foot = "", warn = "", extra = "", err = "", chk = 0;
@@ -1557,7 +1669,7 @@
         const since = new Date(w.at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric" });
         if (hasG(w) && w.mon && w.mon.at === w.at && w.mon.upd) {
           const T = monSum(w); let cost = 0, tin = 0, tout = 0; const nop = [];
-          for (const [m, r] of Object.entries(T)) { tin += r[0]; tout += r[1]; const c = apCost("␟" + m, r[0], r[1]); if (c == null) { if (r[0] + r[1] > 0) nop.push(m); } else cost += c; }
+          for (const [m, r] of Object.entries(T)) { tin += r[0]; tout += r[1]; const c = apCost("google_vertex" + SEP + m, r[0], r[1]); if (c == null) { if (r[0] + r[1] > 0) nop.push(m); } else cost += c; }
           rem = Math.max(0, Number(w.bal) - toG(cost));
           sub = `used since ${since}: ${money(toG(cost))} · ${kTok(tin)} ↑ ${kTok(tout)} ↓`;
           extra = `<div class="mlh-cr-tag">✓ counted by Google — chats, agents, extensions, every device</div>`;
@@ -1588,7 +1700,8 @@
       chk = L.at || 0;
     } else if (w.last && !w.last.err && w.last.total >= 0) {
       total = w.last.total; rem = w.last.rem; sub = `used ${money(w.last.used)} of ${money(w.last.total)}`;
-      if (w.last.month != null) extra = `<div class="mlh-rc-line"><span>This month</span><i></i><b>${money(w.last.month)}</b><em>${won(w.last.month, rate)}</em></div>`;
+      if (w.last.today != null) extra += `<div class="mlh-rc-line"><span>Today</span><i></i><b>${money(w.last.today)}</b><em>${won(w.last.today, rate)}</em></div>`;
+      if (w.last.month != null) extra += `<div class="mlh-rc-line"><span>This month</span><i></i><b>${money(w.last.month)}</b><em>${won(w.last.month, rate)}</em></div>`;
       chk = w.last.at;
     } else { err = w.last?.err || ""; chk = w.last?.at || 0; }
     const pct = rem != null && total > 0 ? Math.max(0, Math.min(100, rem / total * 100)) : 0;
@@ -1616,7 +1729,7 @@
       relay: () => `${fld("url", "Site address", "url", "https://api.linkapi.ai", 'autocomplete="off"')}
           ${fld("key", "API key (saved only in Mallang Home)", "password", "sk-…", 'autocomplete="off"')}
           ${chips("Currency", "crcur", w, "cur", [["USD", "$"], ["CNY", "CN¥"]])}
-          ${w.cur === "CNY" ? `<label class="mlh-wxset"><span class="mlh-ptl">₩ per CN¥1</span><input class="mlh-input" type="number" min="0" step="any" data-apfx="fxc" value="${esc(P.fxc)}"></label>` : ""}
+          <label class="mlh-wxset"><span class="mlh-ptl">Which Marinara connection is this site? (lets the receipt use the site's own total)</span><select class="mlh-input" data-crconn="${w.id}"><option value="">— none —</option>${(data.conns || []).filter((c) => !/nano|google|anthropic|claude/i.test(String(c.provider || ""))).map((c) => `<option value="${esc(c.id)}"${w.conn === c.id ? " selected" : ""}>${esc(c.name || c.model || c.id)} · ${esc(c.provider)}</option>`).join("")}</select></label>
           <div class="mlh-empty">Works with sites built on One API / New API. Checks every 30 min or with ↻.</div>`,
       nano: () => `${fld("key", "API key for the balance (saved only in Mallang Home)", "password", "your NanoGPT key", 'autocomplete="off"')}
           <label class="mlh-wxset"><span class="mlh-ptl">Subscription — read through this connection</span><select class="mlh-input" data-crconn="${w.id}"><option value="">— none —</option>${nanoConns.map((c) => `<option value="${esc(c.id)}"${w.conn === c.id ? " selected" : ""}>${esc(c.name || c.model || c.id)}</option>`).join("")}</select></label>
@@ -1659,6 +1772,8 @@
     if (a === "crmode") { if (w.mode !== v) { w.mode = v; w.last = null; w.key = ""; } }
     else if (a === "crscope") w.scope = v;
     else if (a === "crcur") w.cur = v;
+    else if (a === "apdisp") apw().disp = v;
+    else if (a === "apscur") { const prov = b.dataset.prov; if (prov != null) apw().siteCur[prov] = v; }
     else if (a === "crgcur") { if (w.gcur !== v) { w.gcur = v; w.bal = ""; w.at = ""; w.tot = v === "KRW" ? "" : 300; delete w.mon; } }
     else if (a === "crsax") { delete w.sa; delete w.mon; w.saErr = ""; }
     else return false;
