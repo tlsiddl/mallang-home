@@ -5,7 +5,7 @@
 
 | 파일 | 내용 |
 |---|---|
-| `mallang-home-1.33.1.personal-extension.zip` | 말랑 홈 (홈 화면 개인 확장) |
+| `mallang-home-1.33.2.personal-extension.zip` | 말랑 홈 (홈 화면 개인 확장) |
 | `extension.js` · `extension.css` · `manifest.json` | 말랑 홈 파일 (깃허브 확장 관리자로 바로 설치할 때) |
 | `Mallang_Celestial_Theme.json` | 말랑 천문 테마 (앱 전체 테마) |
 
@@ -66,7 +66,7 @@
 ## 설치 방법
 
 ### 말랑 홈 (개인 확장)
-1. 위의 `mallang-home-1.33.1.personal-extension.zip` 을 내려받아요. (압축은 풀지 않아도 돼요)
+1. 위의 `mallang-home-1.33.2.personal-extension.zip` 을 내려받아요. (압축은 풀지 않아도 돼요)
 2. 마리나라 **설정 → 개인 확장 → 설치** 에서 zip 파일을 골라요.
 3. 실행 허락 창이 뜨면 허락해 줘요.
 4. 새로고침하면 홈 화면이 말랑 홈으로 바뀌어요.
