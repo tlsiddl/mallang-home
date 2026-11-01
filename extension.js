@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   /* ══════════════════════════════════════════════════════════
-   *  말랑 홈 (공유판) v1.35.2 · Celestial Editorial
+   *  말랑 홈 (공유판) v1.36.0 · Celestial Editorial
    *  마리나라 기본 홈(HomeBrowserHub.HomePage) 안에 새 홈을 그리고
    *  기본 내용은 숨긴다. 기본 홈의 버튼(새 채팅·최근 채팅 카드)은
    *  DOM에 그대로 남겨 두고 대신 눌러 주는 방식이라 앱 기능을 건드리지 않는다.
@@ -1705,6 +1705,12 @@
       delete rows["nanogpt"];
       const r = row("nano:" + w.id); r.name = w.name || "NanoGPT"; r.src = "site"; r.m = w.last.month || 0; r.t = w.last.today || 0;
     }
+    for (const w of wid()) {
+      if (w.kind !== "credit" || (w.mode !== "ds" && w.mode !== "or") || !w.last || w.last.today == null) continue;
+      delete rows[w.mode === "ds" ? "deepseek" : "openrouter"];
+      const r = row(w.mode + ":" + w.id); r.name = w.name || (w.mode === "ds" ? "DeepSeek" : "OpenRouter"); r.src = "site";
+      const c = w.mode === "ds" && w.cur === "CNY" ? "CNY" : "USD"; r.m = toUSD(w.last.month || 0, c); r.t = toUSD(w.last.today || 0, c);
+    }
     // 직접 표시한 "Vertex에 이미 포함" 사이트는 구글 모니터링이 있을 때 빼기
     if (ap.gm?.month) for (const [p, on] of Object.entries(apw().inVx || {})) if (on && p !== "google_vertex" && rows[p]) delete rows[p];
     for (const r of Object.values(rows)) { if (Math.abs(r.m) < 1e-9) r.m = 0; if (Math.abs(r.t) < 1e-9) r.t = 0; r.m = Math.max(0, r.m); r.t = Math.max(0, r.t); }
@@ -1887,6 +1893,17 @@
   }
   const monSum = (w) => addTok(w.mon?.base, w.mon?.live);
 
+  // 잔액이 줄어든 만큼 = 쓴 돈 (충전으로 늘면 기준점도 같이 올림) · 통화가 바뀌면 처음부터
+  function balTrack(w, last, B, curKey) {
+    const now = new Date(), day = ymd(now), ym = day.slice(0, 7);
+    let T = w.ntrk; if (!T || T.cur !== curKey) T = w.ntrk = curKey ? { cur: curKey } : {};
+    if (T.lastB != null && B > T.lastB + 0.005) { const up = B - T.lastB; if (T.d) T.d.b += up; if (T.m) T.m.b += up; }
+    const t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime(), m0 = new Date(now.getFullYear(), now.getMonth(), 1).getTime(), had = T.lastB != null;
+    if (!T.d || T.d.k !== day) T.d = { k: day, b: had && T.lastAt < t0 ? T.lastB : B, since: had && T.lastAt < t0 ? t0 : Date.now() };
+    if (!T.m || T.m.k !== ym) T.m = { k: ym, b: had && T.lastAt < m0 ? T.lastB : B, since: had && T.lastAt < m0 ? m0 : Date.now() };
+    T.lastB = B; T.lastAt = Date.now();
+    last.today = Math.max(0, T.d.b - B); last.month = Math.max(0, T.m.b - B); last.daySince = T.d.since; last.monthSince = T.m.since;
+  }
   async function crLookup(w) {
     if (w.busy) return;
     w.busy = true; render();
@@ -1896,6 +1913,51 @@
         try { await gcMonLoad(w); } catch (e) { const m = e?.message === "SIGNIN" ? "" : errText(e); if (w.mon) w.mon.err = m; else w.mon = { at: w.at, err: m }; }
         if (w.mon) w.mon.chk = Date.now();
         return;
+      }
+      if (w.mode === "ds") {
+        const keys = String(w.key || "").split(/[\s,]+/).filter(Boolean);
+        if (!keys.length) { w.last = { at: Date.now(), err: "Add your DeepSeek key in Edit" }; return; }
+        const last = { at: Date.now() };
+        try {
+          const j = await getJ("https://api.deepseek.com/user/balance", { headers: { Authorization: "Bearer " + keys[0], Accept: "application/json" } });
+          const infos = Array.isArray(j?.balance_infos) ? j.balance_infos : [];
+          if (!infos.length) throw new Error("unexpected answer");
+          const pick = infos.find((x) => x.currency === w.cur && w.curSet) || infos.find((x) => Number(x.total_balance) > 0) || infos[0];
+          if (!w.curSet) w.cur = pick.currency === "USD" ? "USD" : "CNY";
+          last.c = pick.currency === "USD" ? "USD" : "CNY";
+          last.bal = Number(pick.total_balance); last.gr = Number(pick.granted_balance) || 0; last.tp = Number(pick.topped_up_balance) || 0; last.avail = j.is_available !== false;
+          if (!(last.bal >= 0)) throw new Error("unexpected answer");
+          balTrack(w, last, last.bal, last.c);
+        } catch (e) { last.err = "Balance: " + errText(e) + (/fetch|network|failed/i.test(errText(e)) ? " — the browser may be blocked from reading it" : ""); }
+        w.last = last; return;
+      }
+      if (w.mode === "or") {
+        const keys = String(w.key || "").split(/[\s,]+/).filter(Boolean).slice(0, 12), mg = String(w.mgmt || "").trim();
+        if (!keys.length && !mg) { w.last = { at: Date.now(), err: "Add your OpenRouter key in Edit" }; return; }
+        const last = { at: Date.now(), keys: 0 };
+        let td = 0, mo = 0, used = 0, lim = 0, limRem = 0, limN = 0; const errs = [];
+        for (const k of keys) {
+          try {
+            const j = (await getJ("https://openrouter.ai/api/v1/key", { headers: { Authorization: "Bearer " + k } }))?.data;
+            if (!j) throw new Error("unexpected answer");
+            td += Number(j.usage_daily) || 0; mo += Number(j.usage_monthly) || 0; used += Number(j.usage) || 0; last.keys++;
+            if (j.limit != null && j.limit_remaining != null) { lim += Number(j.limit) || 0; limRem += Number(j.limit_remaining) || 0; limN++; }
+          } catch (e) { errs.push("Key: " + errText(e)); }
+        }
+        if (last.keys) { last.today = td; last.month = mo; last.used = used; }
+        // 계정 잔액: 관리 키(없으면 첫 키)로 /credits → 안 되면 적어 둔 잔액에서 쓴 만큼 빼기 → 안 되면 키 한도
+        const ck = mg ? [mg] : keys.slice(0, 1);
+        for (const k of ck) {
+          try { const c = (await getJ("https://openrouter.ai/api/v1/credits", { headers: { Authorization: "Bearer " + k } }))?.data; const a = Number(c?.total_credits), b = Number(c?.total_usage); if (a >= 0 && b >= 0) { last.bal = Math.max(0, a - b); last.total = a; last.balSrc = "credits"; if (!last.used) last.used = b; } } catch (e) { last.creditErr = errText(e); }
+        }
+        if (last.bal == null && w.rbal !== "" && w.rbal != null && last.used != null) {
+          if (w.rbase == null) w.rbase = last.used;
+          last.bal = Math.max(0, Number(w.rbal) - (last.used - (Number(w.rbase) || 0))); last.total = Number(w.rbal); last.balSrc = "typed";
+        }
+        if (last.bal == null && limN) { last.bal = limRem; last.total = lim; last.balSrc = "limit"; }
+        if (!last.keys && !last.today && errs.length) last.err = errs[0];
+        else if (errs.length) last.err = errs.join(" · ");
+        w.last = last; return;
       }
       if (w.mode === "nano") {
         const last = { at: Date.now() };
@@ -1934,17 +1996,7 @@
             last.sub = { active: !!u.active, state: u.state || "", d: win(u.dailyInputTokens, u.limits?.dailyInputTokens), wk: win(u.weeklyInputTokens, u.limits?.weeklyInputTokens), end: u.currentPeriodEnd || null };
           } catch (e) { last.errSub = "Subscription: " + errText(e); }
         }
-        // 잔액이 줄어든 만큼 = 쓴 돈 (충전으로 늘면 기준점도 같이 올림)
-        if (last.bal >= 0) {
-          const now = new Date(), day = ymd(now), ym = day.slice(0, 7), B = last.bal;
-          const T = w.ntrk || (w.ntrk = {});
-          if (T.lastB != null && B > T.lastB + 0.005) { const up = B - T.lastB; if (T.d) T.d.b += up; if (T.m) T.m.b += up; }
-          const t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime(), m0 = new Date(now.getFullYear(), now.getMonth(), 1).getTime(), had = T.lastB != null;
-          if (!T.d || T.d.k !== day) T.d = { k: day, b: had && T.lastAt < t0 ? T.lastB : B, since: had && T.lastAt < t0 ? t0 : Date.now() };
-          if (!T.m || T.m.k !== ym) T.m = { k: ym, b: had && T.lastAt < m0 ? T.lastB : B, since: had && T.lastAt < m0 ? m0 : Date.now() };
-          T.lastB = B; T.lastAt = Date.now();
-          last.today = Math.max(0, T.d.b - B); last.month = Math.max(0, T.m.b - B); last.daySince = T.d.since; last.monthSince = T.m.since;
-        }
+        if (last.bal >= 0) balTrack(w, last, last.bal);
         if (last.nu) {
           let td = 0, mo = 0; for (const [d, D] of Object.entries(last.nu.days)) for (const r of Object.values(D)) { if (d >= (last.nu.month || "")) mo += r.c; if (d === last.nu.today) td += r.c; }
           last.today = td; last.month = mo; last.fromUsage = true;
@@ -2044,7 +2096,7 @@
     if (wid().some((w) => w.kind === "credit" && w.mode === "gc" && !w.sa && w.gcid)) gisLoad().catch(() => {});
     for (const w of wid()) {
       if (w.kind !== "credit" || w.busy) continue;
-      const ready = w.mode === "relay" ? w.url && (w.key || w.tok) : w.mode === "nano" ? w.key || w.conn || (data.conns || []).some((c) => /nano/i.test(String(c.provider || ""))) : w.at && (w.sa || (hasG(w) && oValid(w)));
+      const ready = w.mode === "relay" ? w.url && (w.key || w.tok) : w.mode === "ds" || w.mode === "or" ? w.key || w.mgmt : w.mode === "nano" ? w.key || w.conn || (data.conns || []).some((c) => /nano/i.test(String(c.provider || ""))) : w.at && (w.sa || (hasG(w) && oValid(w)));
       const last = w.mode === "gc" ? w.mon?.chk || 0 : w.last?.at || 0;
       if (ready && Date.now() - last > 30 * 60000) crLookup(w);
     }
@@ -2056,7 +2108,7 @@
     // 구글 콘솔이 원화로 보여 주면 원화로: 잔액·총액은 ₩, 사용 금액($ 단가)은 구글 환율로 바꿔서 뺌
     const KRW = mode === "gc" && w.gcur === "KRW";
     const gRate = Number(w.grate) || (KRW && Number(w.tot) > 1000 ? Number(w.tot) / 300 : usdKrw());
-    const cur = KRW ? "₩" : mode === "relay" && w.cur === "CNY" ? "CN¥" : "$", rate = KRW ? 0 : cur === "CN¥" ? cnyKrw() : usdKrw();
+    const cur = KRW ? "₩" : (mode === "relay" || mode === "ds") && w.cur === "CNY" ? "CN¥" : "$", rate = KRW ? 0 : cur === "CN¥" ? cnyKrw() : usdKrw();
     const money = KRW ? (v) => "₩" + Math.round(v).toLocaleString("ko-KR") : (v) => cur + (v >= 1000 ? Math.round(v).toLocaleString("en-US") : v.toFixed(2));
     const toG = (usdV) => KRW ? usdV * gRate : usdV;
     let total = 0, rem = null, sub = "", foot = "", warn = "", extra = "", err = "", chk = 0;
@@ -2082,6 +2134,21 @@
       if (w.mon?.err) err = "Google: " + w.mon.err;
       chk = w.mon?.upd || 0;
       if (w.exp) { const dl = Math.ceil((new Date(w.exp + "T23:59:59").getTime() - Date.now()) / 86400000); foot = `Expires ${esc(w.exp)} · ${dl >= 0 ? "D-" + dl : "expired"}`; }
+    } else if (mode === "ds") {
+      const L = w.last || {};
+      if (L.bal >= 0) { rem = L.bal; total = 0; sub = `granted ${money(L.gr || 0)} · topped up ${money(L.tp || 0)}${L.avail === false ? " · ⚠ balance too low to call" : ""}`; }
+      if (L.today != null) {
+        extra += `<div class="mlh-rc-line"><span>Today</span><i></i><b>${money(L.today)}</b><em>${won(L.today, rate)}</em></div><div class="mlh-rc-line"><span>This month</span><i></i><b>${money(L.month)}</b><em>${won(L.month, rate)}</em></div>`;
+        const mstart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).getTime();
+        extra += `<div class="mlh-cr-tag">from the balance going down${L.monthSince > mstart + 60000 ? ` — counting since ${esc(new Date(L.monthSince).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }))}` : ""} · includes agents and extensions</div>`;
+      }
+      err = L.err || ""; chk = L.at || 0;
+    } else if (mode === "or") {
+      const L = w.last || {};
+      if (L.bal != null) { rem = L.bal; total = L.total > 0 ? L.total : 0; sub = L.balSrc === "credits" ? `credits ${money(L.total)} · used ${money(L.used || 0)}` : L.balSrc === "typed" ? `typed balance, counting down by what your keys spend` : `key limit ${money(L.total)} (account balance needs a management key)`; }
+      if (L.today != null) extra += `<div class="mlh-rc-line"><span>Today</span><i></i><b>${money(L.today)}</b><em>${won(L.today, rate)}</em></div><div class="mlh-rc-line"><span>This month</span><i></i><b>${money(L.month)}</b><em>${won(L.month, rate)}</em></div><div class="mlh-cr-tag">✓ from OpenRouter, ${L.keys} key${L.keys > 1 ? "s" : ""} · days and months in UTC (a day starts 9 AM KST)</div>`;
+      if (L.bal == null && L.today != null) warn = "For the account balance add a management key in Edit, or type the balance shown on OpenRouter once.";
+      err = L.err || ""; chk = L.at || 0;
     } else if (mode === "nano") {
       const L = w.last || {};
       if (L.bal >= 0) { rem = L.bal; total = 0; }
@@ -2119,8 +2186,8 @@
       chk = w.last.at;
     } else { err = w.last?.err || ""; chk = w.last?.at || 0; }
     const pct = rem != null && total > 0 ? Math.max(0, Math.min(100, rem / total * 100)) : 0;
-    const title = esc(w.name || (mode === "gc" ? "Google Cloud" : mode === "nano" ? "NanoGPT" : "API Credit"));
-    const tag = mode === "gc" ? `FREE TRIAL · ${KRW ? (Number(w.tot) ? money(Number(w.tot)) : "₩") : "$" + (Number(w.tot) || 300)}` : mode === "nano" ? "BALANCE · SUBSCRIPTION" : esc(String(w.url || "").replace(/^https?:\/\//, "").replace(/\/.*$/, "") || "RELAY API");
+    const title = esc(w.name || (mode === "gc" ? "Google Cloud" : mode === "nano" ? "NanoGPT" : mode === "ds" ? "DeepSeek" : mode === "or" ? "OpenRouter" : "API Credit"));
+    const tag = mode === "gc" ? `FREE TRIAL · ${KRW ? (Number(w.tot) ? money(Number(w.tot)) : "₩") : "$" + (Number(w.tot) || 300)}` : mode === "nano" ? "BALANCE · SUBSCRIPTION" : mode === "ds" ? "BALANCE · API.DEEPSEEK.COM" : mode === "or" ? "CREDITS · OPENROUTER.AI" : esc(String(w.url || "").replace(/^https?:\/\//, "").replace(/\/.*$/, "") || "RELAY API");
     const fld = (k, label, type, ph, ex = "") => `<label class="mlh-wxset"><span class="mlh-ptl">${label}</span><input class="mlh-input" type="${type}" data-fk="cr-${w.id}-${k}" data-cr="${k}" data-wid="${w.id}" value="${esc(w[k] ?? "")}" placeholder="${ph}" ${ex}></label>`;
     const nanoConns = (data.conns || []).filter((c) => /nano/i.test(String(c.provider || "")));
     const kinds = { gc: () => `${chips("Currency", "crgcur", w, "gcur", [["USD", "$"], ["KRW", "₩"]])}
@@ -2149,14 +2216,21 @@
           ${chips("Currency", "crcur", w, "cur", [["USD", "$"], ["CNY", "CN¥"]])}
           <label class="mlh-wxset"><span class="mlh-ptl">Marinara connections for this site (the receipt uses the site's own total for them)</span><select class="mlh-input" data-crconn="${w.id}"><option value="">Auto — ${(() => { const n = w.conn ? 0 : relayConns(w).length; return w.conn ? "match by site address" : n ? `${n} connection${n > 1 ? "s" : ""} use ${esc(hostOf(w.url))}` : "no connection uses this address yet"; })()}</option>${(data.conns || []).filter((c) => !/nano|google|anthropic|claude/i.test(String(c.provider || ""))).map((c) => `<option value="${esc(c.id)}"${w.conn === c.id ? " selected" : ""}>${esc(c.name || c.model || c.id)} · ${esc(c.provider)}</option>`).join("")}</select></label>
           <div class="mlh-empty">Works with sites built on One API / New API. Checks every 30 min or with ↻.</div>`,
+      ds: () => `${fld("key", "API key — from platform.deepseek.com → API keys (one is enough: the balance belongs to the account)", "password", "sk-…", 'autocomplete="off"')}
+          ${chips("Currency", "crcur", w, "cur", [["CNY", "CN¥"], ["USD", "$"]])}
+          <div class="mlh-empty">DeepSeek shows the balance only. Today and this month are counted from how much the balance goes down, so they start counting from the first check. Checks every 30 min or with ↻.</div>`,
+      or: () => `${fld("key", "API keys — every OpenRouter key you use, separated by spaces", "password", "sk-or-v1-…", 'autocomplete="off"')}
+          ${fld("mgmt", "Management key (optional) — only for the account balance", "password", "sk-or-v1-… (Settings → Management keys)", 'autocomplete="off"')}
+          ${fld("rbal", "…or type the balance shown on OpenRouter once (then it counts down by itself)", "number", "e.g. 12.50", 'min="0" step="any" inputmode="decimal"')}
+          <div class="mlh-empty">Today and this month come from each key's own usage numbers (UTC days). Checks every 30 min or with ↻.</div>`,
       nano: () => `${fld("key", "API keys — every NanoGPT key you use (agents too), separated by spaces. The first one is used for the balance.", "password", "your NanoGPT keys", 'autocomplete="off"')}
           <label class="mlh-wxset"><span class="mlh-ptl">Subscription — read through this connection</span><select class="mlh-input" data-crconn="${w.id}"><option value="">Auto — ${nanoConns.length ? `${nanoConns.length} NanoGPT connection${nanoConns.length > 1 ? "s" : ""}` : "no NanoGPT connection"}</option>${nanoConns.map((c) => `<option value="${esc(c.id)}"${w.conn === c.id ? " selected" : ""}>${esc(c.name || c.model || c.id)}</option>`).join("")}</select></label>
           <div class="mlh-empty">The subscription is read through Marinara, so no key is needed for it.</div>` };
-    const tools = ed ? `<div class="mlh-ptools">${moveTools(w)}${chips("Type", "crmode", w, "mode", [["gc", "Google Cloud"], ["relay", "Relay API"], ["nano", "NanoGPT"]])}
+    const tools = ed ? `<div class="mlh-ptools">${moveTools(w)}${chips("Type", "crmode", w, "mode", [["gc", "Google Cloud"], ["relay", "Relay API"], ["nano", "NanoGPT"], ["ds", "DeepSeek"], ["or", "OpenRouter"]])}
         ${fld("name", "Name", "text", title, 'maxlength="40"')}
         ${(kinds[mode] || kinds.gc)()}
         <div class="mlh-pfoot"><button type="button" class="mlh-link" data-wa="del" data-wid="${w.id}">Delete</button></div>${delTools(w, "Delete this credit widget?")}</div>` : "";
-    const hint = mode === "gc" ? "Tap Edit and enter your remaining credit ☁" : w.busy ? "Checking…" : mode === "nano" ? (w.key ? "" : "Add your key in Edit to see the balance ✦") : "Tap Edit and add the site and key ✦";
+    const hint = mode === "gc" ? "Tap Edit and enter your remaining credit ☁" : w.busy ? "Checking…" : (mode === "nano" || mode === "ds" || mode === "or") ? (w.key ? "" : "Add your key in Edit to see the balance ✦") : "Tap Edit and add the site and key ✦";
     const body = rem == null ? (w.last?.keyOnly ? `<div class="mlh-cr-sub">${sub}</div>` : hint ? `<div class="mlh-empty">${esc(hint)}</div>` : "")
       : `<div class="mlh-cr-big"><b>${money(rem)}</b>${total > 0 ? `<span>/ ${money(total)}</span>` : ""}</div>
         ${rate > 0 ? `<div class="mlh-cr-won">${won(rem, rate)}</div>` : ""}
@@ -2188,9 +2262,9 @@
     if (a === "addrcpt") { startOpen = false; if (!wid().some((x) => x.kind === "rcpt")) { const m = { id: newWid(), kind: "rcpt", col: 1, slot: 9 }; wid().push(m); savePrefs(); apScan(true); } render(); return true; }
     if (a === "addcredit") { startOpen = false; if (wid().filter((x) => x.kind === "credit").length < CR_MAX) { const m = { id: newWid(), kind: "credit", col: 1, slot: 9, mode: "gc", tot: 300, scope: "vertex" }; wid().push(m); widEdit = m.id; savePrefs(); } render(); return true; }
     if (!w) return false;
-    if (a === "crmode") { if (w.mode !== v) { w.mode = v; w.last = null; w.key = ""; } }
+    if (a === "crmode") { if (w.mode !== v) { w.mode = v; w.last = null; w.key = ""; w.mgmt = ""; w.rbal = ""; delete w.rbase; delete w.ntrk; delete w.curSet; w.cur = v === "ds" ? "CNY" : "USD"; } }
     else if (a === "crscope") w.scope = v;
-    else if (a === "crcur") { w.cur = v; w.curSet = true; }
+    else if (a === "crcur") { w.cur = v; w.curSet = true; if (w.mode === "ds") { delete w.ntrk; w.last = null; savePrefs(); crLookup(w); } }
     else if (a === "apdisp") apw().disp = v;
     else if (a === "apscur") { const prov = b.dataset.prov; if (prov != null) apw().siteCur[prov] = v; }
     else if (a === "apinvx") { const prov = b.dataset.prov, P = apw(); if (prov != null) P.inVx = { ...(P.inVx || {}), [prov]: !P.inVx?.[prov] }; }
@@ -2236,7 +2310,7 @@
       savePrefs(); render();
       if (k === "bal" || k === "lag") { apScan(true); if (hasG(w)) crLookup(w); }
       if (k === "gcid" || k === "proj") { delete w.mon; if (k === "gcid") gTok.delete(oKey(w)); if (w.gcid) gisLoad().catch(() => {}); }
-      if ((w.mode === "relay" && (k === "url" || k === "key" || k === "tok" || k === "uid" || k === "rbal")) || (w.mode === "nano" && k === "key")) { w.last = null; crLookup(w); }
+      if ((w.mode === "relay" && (k === "url" || k === "key" || k === "tok" || k === "uid" || k === "rbal")) || ((w.mode === "nano" || w.mode === "ds") && k === "key") || (w.mode === "or" && (k === "key" || k === "mgmt" || k === "rbal"))) { if (k === "rbal") delete w.rbase; w.last = null; crLookup(w); }
       return true;
     }
     return false;
