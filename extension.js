@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   /* ══════════════════════════════════════════════════════════
-   *  말랑 홈 (공유판) v1.25.1 · Celestial Editorial
+   *  말랑 홈 (공유판) v1.25.2 · Celestial Editorial
    *  마리나라 기본 홈(HomeBrowserHub.HomePage) 안에 새 홈을 그리고
    *  기본 내용은 숨긴다. 기본 홈의 버튼(새 채팅·최근 채팅 카드)은
    *  DOM에 그대로 남겨 두고 대신 눌러 주는 방식이라 앱 기능을 건드리지 않는다.
@@ -1243,7 +1243,7 @@
     return p;
   };
   const ap = { busy: false, err: "", at: 0, done: 0, todo: 0, from: "", hours: {}, cache: null };
-  const AP_LS = "mlh-api-usage-v2";
+  const AP_LS = "mlh-api-usage-v3";
   function apCache() {
     if (ap.cache) return ap.cache;
     try { ap.cache = JSON.parse(localStorage.getItem(AP_LS) || "null"); } catch { ap.cache = null; }
@@ -1266,11 +1266,12 @@
       const g = parseX(ex).generationInfo; if (!g || typeof g !== "object") return;
       // 구글(Gemini·Vertex)은 생각(추론) 토큰을 출력 토큰과 따로 알려 줌 → 요금은 출력으로 매겨지니 더해 줌
       // (OpenAI·Claude는 이미 출력 토큰 안에 들어 있어서 그대로)
-      const p = Number(g.tokensPrompt) || 0, o = (Number(g.tokensCompletion) || 0) + (/google|gemini|vertex/i.test(String(g.provider || "")) ? Number(g.tokensReasoning) || 0 : 0);
+      const th = Number(g.tokensReasoning) || 0, gg = /google|gemini|vertex/i.test(String(g.provider || ""));
+      const p = Number(g.tokensPrompt) || 0, o = (Number(g.tokensCompletion) || 0) + (gg ? th : 0);
       if (!p && !o) return;
       const k = hourKey(t), m = `${g.provider || "?"}␟${g.model || "unknown"}`;
-      const h = out[k] || (out[k] = {}), r = h[m] || (h[m] = [0, 0, 0]);
-      r[0] += p; r[1] += o; r[2] += Math.max(1, Number(g.requestCount) || 1);
+      const h = out[k] || (out[k] = {}), r = h[m] || (h[m] = [0, 0, 0, 0]);
+      r[0] += p; r[1] += o; r[2] += Math.max(1, Number(g.requestCount) || 1); r[3] = (r[3] || 0) + th;
     };
     while (pages++ < 80) {
       const rows = await api(`/chats/${encodeURIComponent(c.id)}/messages?limit=${AP_PAGE}${before ? "&before=" + encodeURIComponent(before) : ""}`);
@@ -1315,7 +1316,7 @@
       const hours = {};
       for (const { h } of Object.values(keep)) for (const [k, ms] of Object.entries(h || {})) {
         const H = hours[k] || (hours[k] = {});
-        for (const [m, r] of Object.entries(ms)) { const R = H[m] || (H[m] = [0, 0, 0]); R[0] += r[0]; R[1] += r[1]; R[2] += r[2]; }
+        for (const [m, r] of Object.entries(ms)) { const R = H[m] || (H[m] = [0, 0, 0, 0]); R[0] += r[0]; R[1] += r[1]; R[2] += r[2]; R[3] += r[3] || 0; }
       }
       ap.hours = hours; ap.from = from; ap.at = Date.now();
     } catch (e) { ap.err = "Couldn't read usage: " + (e?.message || e); }
@@ -1330,13 +1331,13 @@
   }
   // 기간(시작 시각~) 합계 — filter(m)로 모델 거르기
   function apSum(fromMs, filter) {
-    const tot = { n: 0, p: 0, o: 0, cost: 0, unpriced: 0, models: {} };
+    const tot = { n: 0, p: 0, o: 0, th: 0, cost: 0, unpriced: 0, models: {} };
     for (const [k, H] of Object.entries(ap.hours)) {
       if (Date.parse(k.replace("T", "T") + ":00:00") < fromMs) continue;
       for (const [m, r] of Object.entries(H)) {
         if (filter && !filter(m)) continue;
         const c = apCost(m, r[0], r[1]);
-        tot.n += r[2]; tot.p += r[0]; tot.o += r[1];
+        tot.n += r[2]; tot.p += r[0]; tot.o += r[1]; tot.th += r[3] || 0;
         if (c == null) tot.unpriced += r[2]; else tot.cost += c;
         const name = apModelName(m), x = tot.models[name] || (tot.models[name] = { n: 0, p: 0, o: 0, cost: 0, priced: c != null });
         x.n += r[2]; x.p += r[0]; x.o += r[1]; if (c != null) x.cost += c; else x.priced = false;
@@ -1380,6 +1381,7 @@
         <div class="mlh-rc-cut"></div>
         ${line("Requests today", T.n + "")}
         ${line("Tokens today", `${kTok(T.p)} ↑ · ${kTok(T.o)} ↓`)}
+        ${T.th ? line("· thinking (in ↓)", kTok(T.th)) : ""}
         ${line("This month", M.n ? usd(M.cost) : "—", `${M.n} req`)}
         ${M.n && M.cost ? line("Month-end est.", usd(est), won(est, fx)) : ""}
         ${top.length ? `<div class="mlh-rc-cut"></div><div class="mlh-rc-items">${top.map(([m, x]) => line(esc(m), x.priced ? usd(x.cost) : "?", `${x.n}×`)).join("")}</div>` : ""}
