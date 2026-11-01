@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   /* ══════════════════════════════════════════════════════════
-   *  말랑 홈 (공유판) v1.33.3 · Celestial Editorial
+   *  말랑 홈 (공유판) v1.33.4 · Celestial Editorial
    *  마리나라 기본 홈(HomeBrowserHub.HomePage) 안에 새 홈을 그리고
    *  기본 내용은 숨긴다. 기본 홈의 버튼(새 채팅·최근 채팅 카드)은
    *  DOM에 그대로 남겨 두고 대신 눌러 주는 방식이라 앱 기능을 건드리지 않는다.
@@ -1606,6 +1606,11 @@
       const r = row("relay:" + w.id);
       r.name = w.name || hostOf(w.url) || "Relay"; r.src = "site"; r.m = toUSD(PR.month || 0, cur); r.t = toUSD(PR.today || 0, cur);
     }
+    for (const w of wid()) {
+      if (w.kind !== "credit" || w.mode !== "nano" || !w.last || w.last.today == null) continue;
+      delete rows["nanogpt"];
+      const r = row("nano:" + w.id); r.name = w.name || "NanoGPT"; r.src = "site"; r.m = w.last.month || 0; r.t = w.last.today || 0;
+    }
     // 직접 표시한 "Vertex에 이미 포함" 사이트는 구글 모니터링이 있을 때 빼기
     if (ap.gm?.month) for (const [p, on] of Object.entries(apw().inVx || {})) if (on && p !== "google_vertex" && rows[p]) delete rows[p];
     for (const r of Object.values(rows)) { if (Math.abs(r.m) < 1e-9) r.m = 0; if (Math.abs(r.t) < 1e-9) r.t = 0; r.m = Math.max(0, r.m); r.t = Math.max(0, r.t); }
@@ -1660,6 +1665,14 @@
         ${A.month && el >= 3 ? line("Month-end est.", show(est), sub(est)) : A.month ? line("Month-end est.", "—", "from day 3") : ""}
         ${line("Replies today", T.n + "", `${kTok(T.p)}↑ ${kTok(T.o)}↓`)}
         ${A.list.length ? `<div class="mlh-rc-cut"></div><div class="mlh-rc-sub">BY SITE · MONTH (today)</div><div class="mlh-rc-items">${A.list.map((r) => line((tag[r.src] ? `<u>${tag[r.src].trim()}</u> ` : "") + esc(r.name), show(r.m), show(r.t))).join("")}</div>` : ""}
+        ${(() => {
+          // 구독은 정액이라 금액 합계에는 안 넣고, 얼마나 썼는지만 따로
+          const subs = wid().filter((x) => x.kind === "credit" && x.mode === "nano" && x.last?.sub);
+          if (!subs.length) return "";
+          const pc = (x) => { if (!x) return null; const lim = Number(x.lim) || (Number(x.used) + Number(x.rem)) || 0, used = Number(x.used) || 0; const p = x.pct != null ? Number(x.pct) * (Number(x.pct) <= 1 ? 100 : 1) : lim ? used / lim * 100 : 0; return { p: Math.round(Math.min(100, p)), used }; };
+          return `<div class="mlh-rc-cut"></div><div class="mlh-rc-sub">SUBSCRIPTIONS · USED (flat fee, not in the total)</div><div class="mlh-rc-items">${subs.map((x) => { const S = x.last.sub, d = pc(S.d), wk = pc(S.wk), nmx = esc(x.name || "NanoGPT");
+            return (d ? line(nmx + " · today", d.p + "%", kTok(d.used) + " tok") : "") + (wk ? line(nmx + " · this week", wk.p + "%", kTok(wk.used) + " tok") : ""); }).join("")}</div>`;
+        })()}
         ${top.length ? `<div class="mlh-rc-cut"></div><div class="mlh-rc-sub">TOP MODELS IN CHATS · MONTH</div><div class="mlh-rc-items">${top.map(([m, x]) => line(esc(m), x.priced ? show(x.cost) : "?", `${x.n}×`)).join("")}</div>` : ""}
         ${(() => { const miss = new Set(); for (const [n, x] of Object.entries(M.models)) if (!x.priced) miss.add(n); if (ap.gm?.month) for (const [m, r] of Object.entries(ap.gm.month)) if (r[0] + r[1] > 0 && apCost("google_vertex" + SEP + m, r[0], r[1]) == null) miss.add(m); return miss.size ? `<div class="mlh-rc-note">✎ no price yet: ${[...miss].slice(0, 6).map(esc).join(", ")}${miss.size > 6 ? "…" : ""} — add it in Edit</div>` : ""; })()}
         ${ap.err ? `<div class="mlh-empty mlh-perr">${esc(ap.err)}</div>` : ""}${ap.gm?.err ? `<div class="mlh-empty mlh-perr">Google: ${esc(ap.gm.err)}</div>` : ""}
@@ -1794,6 +1807,17 @@
             const win = (x, lim) => x ? { used: x.used, rem: x.remaining, pct: x.percentUsed, reset: x.resetAt, lim } : null;
             last.sub = { active: !!u.active, state: u.state || "", d: win(u.dailyInputTokens, u.limits?.dailyInputTokens), wk: win(u.weeklyInputTokens, u.limits?.weeklyInputTokens), end: u.currentPeriodEnd || null };
           } catch (e) { last.errSub = "Subscription: " + errText(e); }
+        }
+        // 잔액이 줄어든 만큼 = 쓴 돈 (충전으로 늘면 기준점도 같이 올림)
+        if (last.bal >= 0) {
+          const now = new Date(), day = ymd(now), ym = day.slice(0, 7), B = last.bal;
+          const T = w.ntrk || (w.ntrk = {});
+          if (T.lastB != null && B > T.lastB + 0.005) { const up = B - T.lastB; if (T.d) T.d.b += up; if (T.m) T.m.b += up; }
+          const t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime(), m0 = new Date(now.getFullYear(), now.getMonth(), 1).getTime(), had = T.lastB != null;
+          if (!T.d || T.d.k !== day) T.d = { k: day, b: had && T.lastAt < t0 ? T.lastB : B, since: had && T.lastAt < t0 ? t0 : Date.now() };
+          if (!T.m || T.m.k !== ym) T.m = { k: ym, b: had && T.lastAt < m0 ? T.lastB : B, since: had && T.lastAt < m0 ? m0 : Date.now() };
+          T.lastB = B; T.lastAt = Date.now();
+          last.today = Math.max(0, T.d.b - B); last.month = Math.max(0, T.m.b - B); last.daySince = T.d.since; last.monthSince = T.m.since;
         }
         w.last = last; return;
       }
@@ -1938,7 +1962,12 @@
         const left = Math.max(0, 100 - pct);
         return `<div class="mlh-cr-subq"><div><span>${label}</span><b>${Math.round(Math.min(100, pct))}% used · ${kTok(Number(x.rem) || Math.max(0, lim - used))} left</b><em>${x.reset ? "resets " + esc(new Date(Number(x.reset)).toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit" })) : ""}</em></div><div class="mlh-cr-bar"><i style="width:${left.toFixed(1)}%"></i></div></div>`;
       };
-      if (S) extra = `<div class="mlh-cr-subs"><div class="mlh-ptl">Subscription · ${S.active ? "active" : esc(S.state || "inactive")}</div>${bar(S.d, "Today")}${bar(S.wk, "This week")}${S.end ? `<div class="mlh-cr-sub">renews ${esc(new Date(S.end).toLocaleDateString("en-US", { month: "short", day: "numeric" }))}</div>` : ""}</div>`;
+      if (L.today != null) {
+        const st = (t) => new Date(t).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+        extra += `<div class="mlh-rc-line"><span>Today</span><i></i><b>${money(L.today)}</b><em>${won(L.today, rate)}</em></div><div class="mlh-rc-line"><span>This month</span><i></i><b>${money(L.month)}</b><em>${won(L.month, rate)}</em></div>`;
+        if (L.monthSince > new Date(new Date().getFullYear(), new Date().getMonth(), 1).getTime() + 60000) extra += `<div class="mlh-cr-tag">counting since ${esc(st(L.monthSince))} — from the balance going down</div>`;
+      }
+      if (S) extra += `<div class="mlh-cr-subs"><div class="mlh-ptl">Subscription · ${S.active ? "active" : esc(S.state || "inactive")}</div>${bar(S.d, "Today")}${bar(S.wk, "This week")}${S.end ? `<div class="mlh-cr-sub">renews ${esc(new Date(S.end).toLocaleDateString("en-US", { month: "short", day: "numeric" }))}</div>` : ""}</div>`;
       err = [L.err, L.errSub].filter(Boolean).join(" · ");
       chk = L.at || 0;
     } else if (w.last && w.last.trk) {
