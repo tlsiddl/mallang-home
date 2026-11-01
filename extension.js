@@ -1234,7 +1234,7 @@
   /* ── 🧾 API 영수증 + 💳 크레딧(구글 클라우드 · 중계 API 잔액) ──
      영수증: 채팅 메시지(리롤 포함)에 마리나라가 적어 둔 토큰 수를 모아서, 내가 적은 모델 단가로 금액 계산
      크레딧: 구글 클라우드 = 내가 적은 잔액 − 그 뒤로 구글 모델에 쓴 예상 금액 / 중계 API = 키로 잔액 조회 */
-  const AP_PAGE = 30, AP_DAYS_MAX = 92, AP_STALE = 10 * 60000, CR_MAX = 4;
+  const AP_PAGE = 100, AP_DAYS_MAX = 92, AP_STALE = 10 * 60000, CR_MAX = 4;
   const SEP = "␟";
   // price: "사이트␟모델" → [입력, 출력] (그 사이트 통화, 100만 토큰당) · 옛 키("모델"만)는 달러로 모든 사이트에
   // siteCur: 사이트별 단가 통화 · disp: 영수증 표시 통화 · fx/fxc: 손으로 적은 환율(비우면 매일 받아 온 환율)
@@ -1504,11 +1504,12 @@
           const c = todo[i++];
           try { keep[c.id] = { k: `${c.lastMessageAt || ""}|${c.updatedAt || ""}`, h: await apScanChat(c, fromMs) }; }
           catch { /* 이 방은 다음에 */ }
-          ap.done++; apPaint(true);
+          ap.done++; if (ap.done % 4 === 0 || ap.done === ap.todo) apPaint(true);
         }
       };
-      // 긴 메시지 응답 여러 개를 동시에 메모리에 올리지 않는다.
-      await worker();
+      // iOS는 동시 처리량을 낮춰 메모리를 아끼고, 다른 기기는 기존 속도를 유지한다.
+      const ios = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+      await Promise.all(Array.from({ length: ios ? 2 : 3 }, () => worker()));
       cache.chats = keep; apSaveCache();
       const hours = {};
       await extLoad();
