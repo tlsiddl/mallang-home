@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   /* ══════════════════════════════════════════════════════════
-   *  말랑 홈 (공유판) v1.27.0 · Celestial Editorial
+   *  말랑 홈 (공유판) v1.28.0 · Celestial Editorial
    *  마리나라 기본 홈(HomeBrowserHub.HomePage) 안에 새 홈을 그리고
    *  기본 내용은 숨긴다. 기본 홈의 버튼(새 채팅·최근 채팅 카드)은
    *  DOM에 그대로 남겨 두고 대신 눌러 주는 방식이라 앱 기능을 건드리지 않는다.
@@ -1542,26 +1542,30 @@
   }
   const tm = (t) => new Date(t).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
   function creditHTML(w) {
-    w.mode = w.mode || "gc"; w.scope = w.scope || "vertex"; w.cur = w.cur || "USD";
+    w.mode = w.mode || "gc"; w.scope = w.scope || "vertex"; w.cur = w.cur || "USD"; w.gcur = w.gcur || "USD";
     const ed = widEdit === w.id, P = apw(), mode = w.mode;
-    const cur = mode === "relay" && w.cur === "CNY" ? "CN¥" : "$", rate = cur === "CN¥" ? Number(P.fxc) || 0 : Number(P.fx) || 0;
-    const money = (v) => cur + (v >= 1000 ? Math.round(v).toLocaleString("en-US") : v.toFixed(2));
+    // 구글 콘솔이 원화로 보여 주면 원화로: 잔액·총액은 ₩, 사용 금액($ 단가)은 구글 환율로 바꿔서 뺌
+    const KRW = mode === "gc" && w.gcur === "KRW";
+    const gRate = Number(w.grate) || (KRW && Number(w.tot) > 1000 ? Number(w.tot) / 300 : Number(P.fx) || 1400);
+    const cur = KRW ? "₩" : mode === "relay" && w.cur === "CNY" ? "CN¥" : "$", rate = KRW ? 0 : cur === "CN¥" ? Number(P.fxc) || 0 : Number(P.fx) || 0;
+    const money = KRW ? (v) => "₩" + Math.round(v).toLocaleString("ko-KR") : (v) => cur + (v >= 1000 ? Math.round(v).toLocaleString("en-US") : v.toFixed(2));
+    const toG = (usdV) => KRW ? usdV * gRate : usdV;
     let total = 0, rem = null, sub = "", foot = "", warn = "", extra = "", err = "", chk = 0;
     if (mode === "gc") {
-      total = Number(w.tot) || 300;
+      total = Number(w.tot) || (KRW ? 0 : 300);
       if (w.at && Number(w.bal) >= 0 && w.bal !== "" && w.bal != null) {
-        const since = new Date(w.at).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+        const since = new Date(w.at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric" });
         if (hasG(w) && w.mon && w.mon.at === w.at && w.mon.upd) {
           const T = monSum(w); let cost = 0, tin = 0, tout = 0; const nop = [];
           for (const [m, r] of Object.entries(T)) { tin += r[0]; tout += r[1]; const c = apCost("␟" + m, r[0], r[1]); if (c == null) { if (r[0] + r[1] > 0) nop.push(m); } else cost += c; }
-          rem = Math.max(0, Number(w.bal) - cost);
-          sub = `used since ${since}: ${money(cost)} · ${kTok(tin)} ↑ ${kTok(tout)} ↓`;
+          rem = Math.max(0, Number(w.bal) - toG(cost));
+          sub = `used since ${since}: ${money(toG(cost))} · ${kTok(tin)} ↑ ${kTok(tout)} ↓`;
           extra = `<div class="mlh-cr-tag">✓ counted by Google — chats, agents, extensions, every device</div>`;
           if (nop.length) warn = `✎ needs a price on the receipt: ${nop.map(esc).join(", ")}`;
         } else {
           const S = apSum(Date.parse(w.at) || 0, crScopeOk(w));
-          rem = Math.max(0, Number(w.bal) - S.cost);
-          sub = `used since ${since}: ${money(S.cost)} · ${S.n} req`;
+          rem = Math.max(0, Number(w.bal) - toG(S.cost));
+          sub = `used since ${since}: ${money(toG(S.cost))} · ${S.n} req`;
           if (S.unpriced) warn = `✎ ${S.unpriced} request${S.unpriced > 1 ? "s" : ""} without a price — set prices on the receipt`;
           if (hasG(w)) extra = `<div class="mlh-cr-tag">${w.busy ? "asking Google…" : !w.sa && !oValid(w) ? "tap ↻ to sign in with Google and count everything — using chat records for now" : "Google count not loaded yet — using chat records"}</div>`;
         }
@@ -1589,11 +1593,14 @@
     } else { err = w.last?.err || ""; chk = w.last?.at || 0; }
     const pct = rem != null && total > 0 ? Math.max(0, Math.min(100, rem / total * 100)) : 0;
     const title = esc(w.name || (mode === "gc" ? "Google Cloud" : mode === "nano" ? "NanoGPT" : "API Credit"));
-    const tag = mode === "gc" ? `FREE TRIAL · $${Number(w.tot) || 300}` : mode === "nano" ? "BALANCE · SUBSCRIPTION" : esc(String(w.url || "").replace(/^https?:\/\//, "").replace(/\/.*$/, "") || "RELAY API");
+    const tag = mode === "gc" ? `FREE TRIAL · ${KRW ? (Number(w.tot) ? money(Number(w.tot)) : "₩") : "$" + (Number(w.tot) || 300)}` : mode === "nano" ? "BALANCE · SUBSCRIPTION" : esc(String(w.url || "").replace(/^https?:\/\//, "").replace(/\/.*$/, "") || "RELAY API");
     const fld = (k, label, type, ph, ex = "") => `<label class="mlh-wxset"><span class="mlh-ptl">${label}</span><input class="mlh-input" type="${type}" data-fk="cr-${w.id}-${k}" data-cr="${k}" data-wid="${w.id}" value="${esc(w[k] ?? "")}" placeholder="${ph}" ${ex}></label>`;
     const nanoConns = (data.conns || []).filter((c) => /nano/i.test(String(c.provider || "")));
-    const kinds = { gc: () => `${fld("bal", "Remaining now ($) — from the Cloud console", "number", "e.g. 287.40", 'min="0" step="any" inputmode="decimal"')}
-          ${fld("tot", "Total credit ($)", "number", "300", 'min="0" step="any"')}
+    const kinds = { gc: () => `${chips("Currency", "crgcur", w, "gcur", [["USD", "$"], ["KRW", "₩"]])}
+          ${fld("bal", `Remaining now (${KRW ? "₩" : "$"}) — total minus used, from the Cloud console`, "number", KRW ? "e.g. 378023" : "e.g. 287.40", 'min="0" step="any" inputmode="decimal"')}
+          ${fld("tot", `Total credit (${KRW ? "₩" : "$"})`, "number", KRW ? "e.g. 407626" : "300", 'min="0" step="any"')}
+          ${fld("lag", "Console delay (hours) — the console balance is usually ~24h behind", "number", "24", 'min="0" max="72" step="1"')}
+          ${KRW ? fld("grate", `₩ per $1 — Google's rate (empty = total ÷ 300 = ${Math.round(gRate * 100) / 100})`, "number", String(Math.round(gRate * 100) / 100), 'min="0" step="any"') : ""}
           ${fld("exp", "Expires on", "date", "", "")}
           <div class="mlh-wxset"><span class="mlh-ptl">Count Vertex with Google (optional) — sign-in</span></div>
           ${fld("gcid", "OAuth client ID", "text", "1234…apps.googleusercontent.com", 'autocomplete="off" spellcheck="false"')}
@@ -1652,6 +1659,7 @@
     if (a === "crmode") { if (w.mode !== v) { w.mode = v; w.last = null; w.key = ""; } }
     else if (a === "crscope") w.scope = v;
     else if (a === "crcur") w.cur = v;
+    else if (a === "crgcur") { if (w.gcur !== v) { w.gcur = v; w.bal = ""; w.at = ""; w.tot = v === "KRW" ? "" : 300; delete w.mon; } }
     else if (a === "crsax") { delete w.sa; delete w.mon; w.saErr = ""; }
     else return false;
     savePrefs(); render(); crAuto(); return true;
@@ -1680,11 +1688,14 @@
     if (t.dataset.cr) {
       const w = widById(t.dataset.wid); if (!w) return true;
       const k = t.dataset.cr, v = t.value.trim();
-      if (k === "bal") { w.bal = v === "" ? "" : Math.max(0, Number(v) || 0); w.at = v === "" ? "" : new Date().toISOString(); ap.at = 0; delete w.mon; }
-      else if (k === "tot") w.tot = Math.max(0, Number(v) || 0) || 300;
+      // 콘솔 잔액은 하루쯤 늦게 깎이니, "지금 − 지연 시간" 시점의 잔액으로 보고 그 뒤 쓴 만큼 뺌
+      if (k === "bal") { const lag = w.lag === "" || w.lag == null ? 24 : Number(w.lag) || 0; w.bal = v === "" ? "" : Math.max(0, Number(v) || 0); w.at = v === "" ? "" : new Date(Date.now() - lag * 3600000).toISOString(); ap.at = 0; delete w.mon; }
+      else if (k === "lag") { const old = w.lag === "" || w.lag == null ? 24 : Number(w.lag) || 0; w.lag = v === "" ? "" : Math.max(0, Math.min(72, Number(v) || 0)); const nw = w.lag === "" ? 24 : w.lag; if (w.at) { w.at = new Date(Date.parse(w.at) + (old - nw) * 3600000).toISOString(); delete w.mon; ap.at = 0; } }
+      else if (k === "tot") w.tot = Math.max(0, Number(v) || 0) || (w.gcur === "KRW" ? "" : 300);
+      else if (k === "grate") w.grate = v === "" ? "" : Math.max(0, Number(v) || 0);
       else w[k] = v.slice(0, k === "key" ? 300 : 200);
       savePrefs(); render();
-      if (k === "bal") { apScan(true); if (hasG(w)) crLookup(w); }
+      if (k === "bal" || k === "lag") { apScan(true); if (hasG(w)) crLookup(w); }
       if (k === "gcid" || k === "proj") { delete w.mon; if (k === "gcid") gTok.delete(oKey(w)); if (w.gcid) gisLoad().catch(() => {}); }
       if ((w.mode === "relay" && (k === "url" || k === "key")) || (w.mode === "nano" && k === "key")) { w.last = null; crLookup(w); }
       return true;
