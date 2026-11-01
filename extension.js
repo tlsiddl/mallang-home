@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   /* ══════════════════════════════════════════════════════════
-   *  말랑 홈 (공유판) v1.33.2 · Celestial Editorial
+   *  말랑 홈 (공유판) v1.33.3 · Celestial Editorial
    *  마리나라 기본 홈(HomeBrowserHub.HomePage) 안에 새 홈을 그리고
    *  기본 내용은 숨긴다. 기본 홈의 버튼(새 채팅·최근 채팅 카드)은
    *  DOM에 그대로 남겨 두고 대신 눌러 주는 방식이라 앱 기능을 건드리지 않는다.
@@ -1783,9 +1783,14 @@
           try { const j = await getJ("https://nano-gpt.com/api/check-balance", { method: "POST", headers: { "x-api-key": String(w.key).trim() } }); last.bal = Number(j.usd_balance); if (!(last.bal >= 0)) throw new Error("unexpected answer"); }
           catch (e) { last.err = "Balance: " + errText(e); }
         }
-        if (w.conn) {
+        // 구독: 골라 둔 연결, 없으면 나노지피티 연결을 차례로 시도
+        const cand = w.conn ? [w.conn] : (data.conns || []).filter((c) => /nano/i.test(String(c.provider || ""))).map((c) => c.id);
+        if (!cand.length && !w.subOff) last.errSub = "Subscription: no NanoGPT connection found in Marinara";
+        if (cand.length) {
           try {
-            const u = await api(`/connections/${encodeURIComponent(w.conn)}/subscription-usage`);
+            let u = null, lastE = null;
+            for (const id of cand) { try { u = await api(`/connections/${encodeURIComponent(id)}/subscription-usage`); if (u && (u.active != null || u.dailyInputTokens || u.weeklyInputTokens)) { last.subConn = id; break; } u = null; } catch (e) { lastE = e; } }
+            if (!u) throw lastE || new Error("no subscription");
             const win = (x, lim) => x ? { used: x.used, rem: x.remaining, pct: x.percentUsed, reset: x.resetAt, lim } : null;
             last.sub = { active: !!u.active, state: u.state || "", d: win(u.dailyInputTokens, u.limits?.dailyInputTokens), wk: win(u.weeklyInputTokens, u.limits?.weeklyInputTokens), end: u.currentPeriodEnd || null };
           } catch (e) { last.errSub = "Subscription: " + errText(e); }
@@ -1885,7 +1890,7 @@
     if (wid().some((w) => w.kind === "credit" && w.mode === "gc" && !w.sa && w.gcid)) gisLoad().catch(() => {});
     for (const w of wid()) {
       if (w.kind !== "credit" || w.busy) continue;
-      const ready = w.mode === "relay" ? w.url && (w.key || w.tok) : w.mode === "nano" ? w.key || w.conn : w.at && (w.sa || (hasG(w) && oValid(w)));
+      const ready = w.mode === "relay" ? w.url && (w.key || w.tok) : w.mode === "nano" ? w.key || w.conn || (data.conns || []).some((c) => /nano/i.test(String(c.provider || ""))) : w.at && (w.sa || (hasG(w) && oValid(w)));
       const last = w.mode === "gc" ? w.mon?.chk || 0 : w.last?.at || 0;
       if (ready && Date.now() - last > 30 * 60000) crLookup(w);
     }
@@ -1931,7 +1936,7 @@
         const lim = Number(x.lim) || (Number(x.used) + Number(x.rem)) || 0, used = Number(x.used) || 0;
         const pct = x.pct != null ? Number(x.pct) * (Number(x.pct) <= 1 ? 100 : 1) : lim ? used / lim * 100 : 0;
         const left = Math.max(0, 100 - pct);
-        return `<div class="mlh-cr-subq"><div><span>${label}</span><b>${kTok(Number(x.rem) || Math.max(0, lim - used))} left</b><em>${x.reset ? "resets " + esc(new Date(Number(x.reset)).toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit" })) : ""}</em></div><div class="mlh-cr-bar"><i style="width:${left.toFixed(1)}%"></i></div></div>`;
+        return `<div class="mlh-cr-subq"><div><span>${label}</span><b>${Math.round(Math.min(100, pct))}% used · ${kTok(Number(x.rem) || Math.max(0, lim - used))} left</b><em>${x.reset ? "resets " + esc(new Date(Number(x.reset)).toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit" })) : ""}</em></div><div class="mlh-cr-bar"><i style="width:${left.toFixed(1)}%"></i></div></div>`;
       };
       if (S) extra = `<div class="mlh-cr-subs"><div class="mlh-ptl">Subscription · ${S.active ? "active" : esc(S.state || "inactive")}</div>${bar(S.d, "Today")}${bar(S.wk, "This week")}${S.end ? `<div class="mlh-cr-sub">renews ${esc(new Date(S.end).toLocaleDateString("en-US", { month: "short", day: "numeric" }))}</div>` : ""}</div>`;
       err = [L.err, L.errSub].filter(Boolean).join(" · ");
@@ -1985,7 +1990,7 @@
           <label class="mlh-wxset"><span class="mlh-ptl">Marinara connections for this site (the receipt uses the site's own total for them)</span><select class="mlh-input" data-crconn="${w.id}"><option value="">Auto — ${(() => { const n = w.conn ? 0 : relayConns(w).length; return w.conn ? "match by site address" : n ? `${n} connection${n > 1 ? "s" : ""} use ${esc(hostOf(w.url))}` : "no connection uses this address yet"; })()}</option>${(data.conns || []).filter((c) => !/nano|google|anthropic|claude/i.test(String(c.provider || ""))).map((c) => `<option value="${esc(c.id)}"${w.conn === c.id ? " selected" : ""}>${esc(c.name || c.model || c.id)} · ${esc(c.provider)}</option>`).join("")}</select></label>
           <div class="mlh-empty">Works with sites built on One API / New API. Checks every 30 min or with ↻.</div>`,
       nano: () => `${fld("key", "API key for the balance (saved only in Mallang Home)", "password", "your NanoGPT key", 'autocomplete="off"')}
-          <label class="mlh-wxset"><span class="mlh-ptl">Subscription — read through this connection</span><select class="mlh-input" data-crconn="${w.id}"><option value="">— none —</option>${nanoConns.map((c) => `<option value="${esc(c.id)}"${w.conn === c.id ? " selected" : ""}>${esc(c.name || c.model || c.id)}</option>`).join("")}</select></label>
+          <label class="mlh-wxset"><span class="mlh-ptl">Subscription — read through this connection</span><select class="mlh-input" data-crconn="${w.id}"><option value="">Auto — ${nanoConns.length ? `${nanoConns.length} NanoGPT connection${nanoConns.length > 1 ? "s" : ""}` : "no NanoGPT connection"}</option>${nanoConns.map((c) => `<option value="${esc(c.id)}"${w.conn === c.id ? " selected" : ""}>${esc(c.name || c.model || c.id)}</option>`).join("")}</select></label>
           <div class="mlh-empty">The subscription is read through Marinara, so no key is needed for it.</div>` };
     const tools = ed ? `<div class="mlh-ptools">${moveTools(w)}${chips("Type", "crmode", w, "mode", [["gc", "Google Cloud"], ["relay", "Relay API"], ["nano", "NanoGPT"]])}
         ${fld("name", "Name", "text", title, 'maxlength="40"')}
