@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   /* ══════════════════════════════════════════════════════════
-   *  말랑 홈 (공유판) v1.25.2 · Celestial Editorial
+   *  말랑 홈 (공유판) v1.26.0 · Celestial Editorial
    *  마리나라 기본 홈(HomeBrowserHub.HomePage) 안에 새 홈을 그리고
    *  기본 내용은 숨긴다. 기본 홈의 버튼(새 채팅·최근 채팅 카드)은
    *  DOM에 그대로 남겨 두고 대신 눌러 주는 방식이라 앱 기능을 건드리지 않는다.
@@ -1351,6 +1351,7 @@
   const apModels = () => {
     const s = new Set(Object.keys(apw().price));
     for (const H of Object.values(ap.hours)) for (const m of Object.keys(H)) s.add(apModelName(m));
+    for (const w of wid()) if (w.kind === "credit" && w.mon) for (const m of Object.keys(monSum(w))) s.add(m);
     return [...s].sort();
   };
 
@@ -1393,99 +1394,236 @@
     </section>`;
   }
 
-  /* 크레딧 */
+  /* 크레딧 — 종류 3가지
+     gc   : 구글 클라우드. 내가 적은 잔액 − 그 뒤로 쓴 금액
+            (서비스 계정을 넣으면 구글 모니터링이 센 Vertex 토큰 = 채팅·에이전트·확장·다른 기기 전부, 없으면 마리나라 채팅 기록)
+     relay: One API / New API 기반 중계 사이트 — 키로 잔액 + 이번 달 쓴 금액
+     nano : 나노지피티 — 충전 잔액(키) + 구독 사용량(마리나라 연결로 읽음, 키 필요 없음) */
   const crScopeOk = (w) => (m) => { const p = apProv(m).toLowerCase(); return (w.scope || "vertex") === "vertex" ? p.includes("vertex") : /google|gemini|vertex/.test(p); };
+  const errText = (e) => {
+    const m = String(e?.message || e);
+    return /failed to fetch|load failed|networkerror/i.test(m) ? "The site didn't allow a lookup from the browser"
+      : /^40[13]$/.test(m) ? "The key was refused (check it in Edit)" : m.slice(0, 160);
+  };
+  const getJ = (url, opt) => fetch(url, opt).then(async (r) => { if (!r.ok) { let t = ""; try { const j = await r.json(); t = j?.error?.message || j?.error_description || j?.message || ""; } catch {} throw new Error(t ? `${r.status} ${t}` : String(r.status)); } return r.json(); });
+
+  /* 구글 서비스 계정 → 접근 토큰 (모니터링 읽기 전용) */
+  const gTok = new Map();
+  const b64u = (buf) => { let s = ""; for (const b of new Uint8Array(buf)) s += String.fromCharCode(b); return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); };
+  async function gToken(sa) {
+    const hit = gTok.get(sa.client_email); if (hit && hit.exp > Date.now() + 60000) return hit.tok;
+    if (!globalThis.crypto?.subtle) throw new Error("This page isn't on https/localhost, so it can't sign in to Google here — open Mallang Home on your PC once");
+    const now = Math.floor(Date.now() / 1000), enc = new TextEncoder();
+    const head = b64u(enc.encode(JSON.stringify({ alg: "RS256", typ: "JWT" })));
+    const claim = b64u(enc.encode(JSON.stringify({ iss: sa.client_email, scope: "https://www.googleapis.com/auth/monitoring.read", aud: "https://oauth2.googleapis.com/token", iat: now, exp: now + 3600 })));
+    const der = Uint8Array.from(atob(String(sa.private_key).replace(/-----[^-]+-----/g, "").replace(/\s+/g, "")), (c) => c.charCodeAt(0));
+    const key = await crypto.subtle.importKey("pkcs8", der, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["sign"]);
+    const sig = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, enc.encode(head + "." + claim));
+    const j = await getJ("https://oauth2.googleapis.com/token", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: "grant_type=" + encodeURIComponent("urn:ietf:params:oauth:grant-type:jwt-bearer") + "&assertion=" + head + "." + claim + "." + b64u(sig) });
+    gTok.set(sa.client_email, { tok: j.access_token, exp: Date.now() + (Number(j.expires_in) || 3600) * 1000 });
+    return j.access_token;
+  }
+  // [from, to] 동안 Vertex 모델별 입력·출력 토큰 합계 {model: [in, out]}
+  async function gTokens(sa, fromMs, toMs) {
+    const tok = await gToken(sa), sec = Math.max(60, Math.ceil((toMs - fromMs) / 1000));
+    const q = new URLSearchParams();
+    q.set("filter", 'metric.type="aiplatform.googleapis.com/publisher/online_serving/token_count"');
+    q.set("interval.startTime", new Date(toMs - sec * 1000).toISOString()); q.set("interval.endTime", new Date(toMs).toISOString());
+    q.set("aggregation.alignmentPeriod", sec + "s"); q.set("aggregation.perSeriesAligner", "ALIGN_SUM"); q.set("aggregation.crossSeriesReducer", "REDUCE_SUM");
+    q.append("aggregation.groupByFields", "resource.label.model_user_id"); q.append("aggregation.groupByFields", "metric.label.type");
+    const out = {}; let page = "";
+    for (let n = 0; n < 10; n++) {
+      if (page) q.set("pageToken", page);
+      const j = await getJ(`https://monitoring.googleapis.com/v3/projects/${encodeURIComponent(sa.project_id)}/timeSeries?${q}`, { headers: { Authorization: "Bearer " + tok } });
+      for (const s of j.timeSeries || []) {
+        const m = s.resource?.labels?.model_user_id || "unknown", t = String(s.metric?.labels?.type || "").toLowerCase();
+        const v = (s.points || []).reduce((a, p) => a + (Number(p.value?.int64Value ?? p.value?.doubleValue) || 0), 0);
+        const r = out[m] || (out[m] = [0, 0]); r[t.startsWith("in") ? 0 : 1] += v;
+      }
+      page = j.nextPageToken || ""; if (!page) break;
+    }
+    return out;
+  }
+  const addTok = (a, b) => { const o = { ...(a || {}) }; for (const [m, r] of Object.entries(b || {})) { const x = (o[m] || [0, 0]).slice(); x[0] += r[0]; x[1] += r[1]; o[m] = x; } return o; };
+  // 모니터링 기록은 6주만 남아서, 일주일 넘게 지난 몫은 접어서(base) 보관
+  async function gcMonLoad(w) {
+    const sa = w.sa, at = Date.parse(w.at || ""); if (!sa || !at) return;
+    const mon = w.mon && w.mon.at === w.at ? w.mon : (w.mon = { at: w.at, from: at, base: {}, live: {}, upd: 0 });
+    const now = Date.now();
+    if (now - mon.from > 7 * 86400000) { const cut = now - 86400000; mon.base = addTok(mon.base, await gTokens(sa, mon.from, cut)); mon.from = cut; }
+    mon.live = await gTokens(sa, mon.from, now); mon.upd = now; mon.err = "";
+  }
+  const monSum = (w) => addTok(w.mon?.base, w.mon?.live);
+
   async function crLookup(w) {
-    const base = String(w.url || "").trim().replace(/\/+$/, "").replace(/\/v1$/, ""), key = String(w.key || "").trim();
-    if (!base || !key) { w.last = { at: Date.now(), err: "Add the site address and key in Edit" }; render(); return; }
+    if (w.busy) return;
     w.busy = true; render();
     try {
-      const h = { Authorization: "Bearer " + key };
-      const s = await fetch(base + "/v1/dashboard/billing/subscription", { headers: h }).then((r) => r.ok ? r.json() : Promise.reject(new Error(r.status)));
-      const end = ymd(new Date(Date.now() + 86400000));
-      const u = await fetch(`${base}/v1/dashboard/billing/usage?start_date=2023-01-01&end_date=${end}`, { headers: h }).then((r) => r.ok ? r.json() : Promise.reject(new Error(r.status)));
-      const total = Number(s.hard_limit_usd ?? s.system_hard_limit_usd), used = Number(u.total_usage) / 100;
-      if (!(total >= 0) || !(used >= 0)) throw new Error("unexpected answer");
-      w.last = { at: Date.now(), total, used, rem: Math.max(0, total - used) };
-    } catch (e) {
-      const m = String(e?.message || e);
-      w.last = { at: Date.now(), err: /failed to fetch|load failed|networkerror/i.test(m) ? "The site didn't allow a lookup from the browser" : /^40[13]$/.test(m) ? "The key was refused (check it in Edit)" : "Couldn't read the balance (" + m + ")" };
+      if (w.mode === "gc") {
+        if (!w.sa) return;
+        try { await gcMonLoad(w); } catch (e) { if (w.mon) w.mon.err = errText(e); else w.mon = { at: w.at, err: errText(e) }; }
+        if (w.mon) w.mon.chk = Date.now();
+        return;
+      }
+      if (w.mode === "nano") {
+        const last = { at: Date.now() };
+        if (w.key) {
+          try { const j = await getJ("https://nano-gpt.com/api/check-balance", { method: "POST", headers: { "x-api-key": String(w.key).trim() } }); last.bal = Number(j.usd_balance); if (!(last.bal >= 0)) throw new Error("unexpected answer"); }
+          catch (e) { last.err = "Balance: " + errText(e); }
+        }
+        if (w.conn) {
+          try {
+            const u = await api(`/connections/${encodeURIComponent(w.conn)}/subscription-usage`);
+            const win = (x, lim) => x ? { used: x.used, rem: x.remaining, pct: x.percentUsed, reset: x.resetAt, lim } : null;
+            last.sub = { active: !!u.active, state: u.state || "", d: win(u.dailyInputTokens, u.limits?.dailyInputTokens), wk: win(u.weeklyInputTokens, u.limits?.weeklyInputTokens), end: u.currentPeriodEnd || null };
+          } catch (e) { last.errSub = "Subscription: " + errText(e); }
+        }
+        w.last = last; return;
+      }
+      const base = String(w.url || "").trim().replace(/\/+$/, "").replace(/\/v1$/, ""), key = String(w.key || "").trim();
+      if (!base || !key) { w.last = { at: Date.now(), err: "Add the site address and key in Edit" }; return; }
+      try {
+        const h = { Authorization: "Bearer " + key }, end = ymd(new Date(Date.now() + 86400000)), d = new Date();
+        const s = await getJ(base + "/v1/dashboard/billing/subscription", { headers: h });
+        const u = await getJ(`${base}/v1/dashboard/billing/usage?start_date=2023-01-01&end_date=${end}`, { headers: h });
+        const total = Number(s.hard_limit_usd ?? s.system_hard_limit_usd), used = Number(u.total_usage) / 100;
+        if (!(total >= 0) || !(used >= 0)) throw new Error("unexpected answer");
+        let month = null;
+        try { const um = await getJ(`${base}/v1/dashboard/billing/usage?start_date=${d.getFullYear()}-${pad2(d.getMonth() + 1)}-01&end_date=${end}`, { headers: h }); month = Number(um.total_usage) / 100; if (!(month >= 0)) month = null; } catch {}
+        w.last = { at: Date.now(), total, used, rem: Math.max(0, total - used), month };
+      } catch (e) { w.last = { at: Date.now(), err: errText(e) }; }
     } finally { w.busy = false; savePrefs(); render(); }
   }
   function crAuto() {
-    for (const w of wid()) if (w.kind === "credit" && w.mode === "relay" && w.key && w.url && !w.busy && Date.now() - (w.last?.at || 0) > 30 * 60000) crLookup(w);
+    for (const w of wid()) {
+      if (w.kind !== "credit" || w.busy) continue;
+      const ready = w.mode === "relay" ? w.key && w.url : w.mode === "nano" ? w.key || w.conn : w.sa && w.at;
+      const last = w.mode === "gc" ? w.mon?.chk || 0 : w.last?.at || 0;
+      if (ready && Date.now() - last > 30 * 60000) crLookup(w);
+    }
   }
+  const tm = (t) => new Date(t).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
   function creditHTML(w) {
     w.mode = w.mode || "gc"; w.scope = w.scope || "vertex"; w.cur = w.cur || "USD";
-    const ed = widEdit === w.id, P = apw(), mode = w.mode || "gc";
+    const ed = widEdit === w.id, P = apw(), mode = w.mode;
     const cur = mode === "relay" && w.cur === "CNY" ? "CN¥" : "$", rate = cur === "CN¥" ? Number(P.fxc) || 0 : Number(P.fx) || 0;
     const money = (v) => cur + (v >= 1000 ? Math.round(v).toLocaleString("en-US") : v.toFixed(2));
-    let total = 0, rem = null, sub = "", foot = "", warn = "";
+    let total = 0, rem = null, sub = "", foot = "", warn = "", extra = "", err = "", chk = 0;
     if (mode === "gc") {
       total = Number(w.tot) || 300;
       if (w.at && Number(w.bal) >= 0 && w.bal !== "" && w.bal != null) {
-        const S = apSum(Date.parse(w.at) || 0, crScopeOk(w));
-        rem = Math.max(0, Number(w.bal) - S.cost);
-        sub = `used since ${new Date(w.at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}: ${money(S.cost)} · ${S.n} req`;
-        if (S.unpriced) warn = `✎ ${S.unpriced} request${S.unpriced > 1 ? "s" : ""} without a price — set prices on the receipt`;
+        const since = new Date(w.at).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+        if (w.sa && w.mon && w.mon.at === w.at && w.mon.upd) {
+          const T = monSum(w); let cost = 0, tin = 0, tout = 0; const nop = [];
+          for (const [m, r] of Object.entries(T)) { tin += r[0]; tout += r[1]; const c = apCost("␟" + m, r[0], r[1]); if (c == null) { if (r[0] + r[1] > 0) nop.push(m); } else cost += c; }
+          rem = Math.max(0, Number(w.bal) - cost);
+          sub = `used since ${since}: ${money(cost)} · ${kTok(tin)} ↑ ${kTok(tout)} ↓`;
+          extra = `<div class="mlh-cr-tag">✓ counted by Google — chats, agents, extensions, every device</div>`;
+          if (nop.length) warn = `✎ needs a price on the receipt: ${nop.map(esc).join(", ")}`;
+        } else {
+          const S = apSum(Date.parse(w.at) || 0, crScopeOk(w));
+          rem = Math.max(0, Number(w.bal) - S.cost);
+          sub = `used since ${since}: ${money(S.cost)} · ${S.n} req`;
+          if (S.unpriced) warn = `✎ ${S.unpriced} request${S.unpriced > 1 ? "s" : ""} without a price — set prices on the receipt`;
+          if (w.sa) extra = `<div class="mlh-cr-tag">${w.busy ? "asking Google…" : "Google count not loaded yet — using chat records"}</div>`;
+        }
       }
-      if (w.exp) {
-        const dl = Math.ceil((new Date(w.exp + "T23:59:59").getTime() - Date.now()) / 86400000);
-        foot = `Expires ${esc(w.exp)} · ${dl >= 0 ? "D-" + dl : "expired"}`;
-      }
+      if (w.mon?.err) err = "Google: " + w.mon.err;
+      chk = w.mon?.upd || 0;
+      if (w.exp) { const dl = Math.ceil((new Date(w.exp + "T23:59:59").getTime() - Date.now()) / 86400000); foot = `Expires ${esc(w.exp)} · ${dl >= 0 ? "D-" + dl : "expired"}`; }
+    } else if (mode === "nano") {
+      const L = w.last || {};
+      if (L.bal >= 0) { rem = L.bal; total = 0; }
+      const S = L.sub, bar = (x, label) => {
+        if (!x) return "";
+        const lim = Number(x.lim) || (Number(x.used) + Number(x.rem)) || 0, used = Number(x.used) || 0;
+        const pct = x.pct != null ? Number(x.pct) * (Number(x.pct) <= 1 ? 100 : 1) : lim ? used / lim * 100 : 0;
+        const left = Math.max(0, 100 - pct);
+        return `<div class="mlh-cr-subq"><div><span>${label}</span><b>${kTok(Number(x.rem) || Math.max(0, lim - used))} left</b><em>${x.reset ? "resets " + esc(new Date(Number(x.reset)).toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit" })) : ""}</em></div><div class="mlh-cr-bar"><i style="width:${left.toFixed(1)}%"></i></div></div>`;
+      };
+      if (S) extra = `<div class="mlh-cr-subs"><div class="mlh-ptl">Subscription · ${S.active ? "active" : esc(S.state || "inactive")}</div>${bar(S.d, "Today")}${bar(S.wk, "This week")}${S.end ? `<div class="mlh-cr-sub">renews ${esc(new Date(S.end).toLocaleDateString("en-US", { month: "short", day: "numeric" }))}</div>` : ""}</div>`;
+      err = [L.err, L.errSub].filter(Boolean).join(" · ");
+      chk = L.at || 0;
     } else if (w.last && !w.last.err && w.last.total >= 0) {
       total = w.last.total; rem = w.last.rem; sub = `used ${money(w.last.used)} of ${money(w.last.total)}`;
-    }
+      if (w.last.month != null) extra = `<div class="mlh-rc-line"><span>This month</span><i></i><b>${money(w.last.month)}</b><em>${won(w.last.month, rate)}</em></div>`;
+      chk = w.last.at;
+    } else { err = w.last?.err || ""; chk = w.last?.at || 0; }
     const pct = rem != null && total > 0 ? Math.max(0, Math.min(100, rem / total * 100)) : 0;
-    const title = esc(w.name || (mode === "gc" ? "Google Cloud" : "API Credit"));
-    const tag = mode === "gc" ? `FREE TRIAL · $${Number(w.tot) || 300}` : esc(String(w.url || "").replace(/^https?:\/\//, "").replace(/\/.*$/, "") || "RELAY API");
-    const chipsMode = chips("Type", "crmode", w, "mode", [["gc", "Google Cloud"], ["relay", "Relay API (auto)"]]);
-    const fld = (k, label, type, ph, extra = "") => `<label class="mlh-wxset"><span class="mlh-ptl">${label}</span><input class="mlh-input" type="${type}" data-fk="cr-${w.id}-${k}" data-cr="${k}" data-wid="${w.id}" value="${esc(w[k] ?? "")}" placeholder="${ph}" ${extra}></label>`;
-    const tools = ed ? `<div class="mlh-ptools">${moveTools(w)}${chipsMode}
-        ${fld("name", "Name", "text", mode === "gc" ? "Google Cloud" : "LinkAPI", 'maxlength="40"')}
-        ${mode === "gc" ? `${fld("bal", "Remaining now ($) — from the Cloud console", "number", "e.g. 287.40", 'min="0" step="any" inputmode="decimal"')}
+    const title = esc(w.name || (mode === "gc" ? "Google Cloud" : mode === "nano" ? "NanoGPT" : "API Credit"));
+    const tag = mode === "gc" ? `FREE TRIAL · $${Number(w.tot) || 300}` : mode === "nano" ? "BALANCE · SUBSCRIPTION" : esc(String(w.url || "").replace(/^https?:\/\//, "").replace(/\/.*$/, "") || "RELAY API");
+    const fld = (k, label, type, ph, ex = "") => `<label class="mlh-wxset"><span class="mlh-ptl">${label}</span><input class="mlh-input" type="${type}" data-fk="cr-${w.id}-${k}" data-cr="${k}" data-wid="${w.id}" value="${esc(w[k] ?? "")}" placeholder="${ph}" ${ex}></label>`;
+    const nanoConns = (data.conns || []).filter((c) => /nano/i.test(String(c.provider || "")));
+    const kinds = { gc: () => `${fld("bal", "Remaining now ($) — from the Cloud console", "number", "e.g. 287.40", 'min="0" step="any" inputmode="decimal"')}
           ${fld("tot", "Total credit ($)", "number", "300", 'min="0" step="any"')}
           ${fld("exp", "Expires on", "date", "", "")}
-          ${chips("Count", "crscope", w, "scope", [["vertex", "Vertex only"], ["google", "All Google"]])}
-          <div class="mlh-empty">Each time you enter the balance, it starts counting again from now. Usage uses the prices on the API receipt.</div>`
-        : `${fld("url", "Site address", "url", "https://api.linkapi.ai", 'autocomplete="off"')}
+          <div class="mlh-wxset"><span class="mlh-ptl">Count Vertex with Google (optional)</span>
+            ${w.sa ? `<div class="mlh-empty">✓ ${esc(w.sa.client_email)} · ${esc(w.sa.project_id)} <button type="button" class="mlh-link" data-wa="crsax" data-wid="${w.id}">Remove</button></div>`
+              : `<textarea class="mlh-input" rows="3" data-cr="sa" data-wid="${w.id}" spellcheck="false" placeholder="Paste the service account key (.json) here"></textarea>`}
+            ${w.saErr ? `<div class="mlh-empty mlh-perr">${esc(w.saErr)}</div>` : ""}
+          </div>
+          ${w.sa ? "" : chips("Count", "crscope", w, "scope", [["vertex", "Vertex only"], ["google", "All Google"]])}
+          <div class="mlh-empty">Each time you enter the balance, it starts counting again from now. Costs use the prices on the API receipt.</div>`,
+      relay: () => `${fld("url", "Site address", "url", "https://api.linkapi.ai", 'autocomplete="off"')}
           ${fld("key", "API key (saved only in Mallang Home)", "password", "sk-…", 'autocomplete="off"')}
           ${chips("Currency", "crcur", w, "cur", [["USD", "$"], ["CNY", "CN¥"]])}
           ${w.cur === "CNY" ? `<label class="mlh-wxset"><span class="mlh-ptl">₩ per CN¥1</span><input class="mlh-input" type="number" min="0" step="any" data-apfx="fxc" value="${esc(P.fxc)}"></label>` : ""}
-          <div class="mlh-empty">Works with sites built on One API / New API. Checks every 30 min or with ↻.</div>`}
+          <div class="mlh-empty">Works with sites built on One API / New API. Checks every 30 min or with ↻.</div>`,
+      nano: () => `${fld("key", "API key for the balance (saved only in Mallang Home)", "password", "your NanoGPT key", 'autocomplete="off"')}
+          <label class="mlh-wxset"><span class="mlh-ptl">Subscription — read through this connection</span><select class="mlh-input" data-crconn="${w.id}"><option value="">— none —</option>${nanoConns.map((c) => `<option value="${esc(c.id)}"${w.conn === c.id ? " selected" : ""}>${esc(c.name || c.model || c.id)}</option>`).join("")}</select></label>
+          <div class="mlh-empty">The subscription is read through Marinara, so no key is needed for it.</div>` };
+    const tools = ed ? `<div class="mlh-ptools">${moveTools(w)}${chips("Type", "crmode", w, "mode", [["gc", "Google Cloud"], ["relay", "Relay API"], ["nano", "NanoGPT"]])}
+        ${fld("name", "Name", "text", title, 'maxlength="40"')}
+        ${(kinds[mode] || kinds.gc)()}
         <div class="mlh-pfoot"><button type="button" class="mlh-link" data-wa="del" data-wid="${w.id}">Delete</button></div>${delTools(w, "Delete this credit widget?")}</div>` : "";
-    const body = rem == null
-      ? `<div class="mlh-empty">${mode === "gc" ? "Tap Edit and enter your remaining credit ☁" : w.busy ? "Checking…" : esc(w.last?.err || "Tap Edit and add the site and key ✦")}</div>`
-      : `<div class="mlh-cr-big"><b>${money(rem)}</b><span>/ ${money(total)}</span></div>
+    const hint = mode === "gc" ? "Tap Edit and enter your remaining credit ☁" : w.busy ? "Checking…" : mode === "nano" ? (w.key ? "" : "Add your key in Edit to see the balance ✦") : "Tap Edit and add the site and key ✦";
+    const body = rem == null ? (hint ? `<div class="mlh-empty">${esc(hint)}</div>` : "")
+      : `<div class="mlh-cr-big"><b>${money(rem)}</b>${total > 0 ? `<span>/ ${money(total)}</span>` : ""}</div>
         ${rate > 0 ? `<div class="mlh-cr-won">${won(rem, rate)}</div>` : ""}
-        <div class="mlh-cr-bar"><i style="width:${pct.toFixed(1)}%"></i></div>
-        <div class="mlh-cr-sub">${sub}</div>`;
+        ${total > 0 ? `<div class="mlh-cr-bar"><i style="width:${pct.toFixed(1)}%"></i></div>` : ""}
+        ${sub ? `<div class="mlh-cr-sub">${sub}</div>` : ""}`;
+    const canRe = mode !== "gc" || !!w.sa;
     return `<section class="mlh-card mlh-crcard" data-mode="${mode}">
       <div class="mlh-card-head"><h2 class="mlh-card-title">Credit</h2><button type="button" class="mlh-link" data-wa="${ed ? "done" : "edit"}" data-wid="${w.id}">${ed ? "Done" : "Edit"}</button></div>
       ${tools}
       <div class="mlh-cr">
-        <div class="mlh-cr-brand"><i class="mlh-cr-ico" aria-hidden="true"></i><span><b>${title}</b><em>${tag}</em></span>${mode === "relay" ? `<button type="button" class="mlh-wxre" data-crre="${w.id}" title="Check now" aria-label="Check now"${w.busy ? " disabled" : ""}>↻</button>` : ""}</div>
-        ${body}
+        <div class="mlh-cr-brand"><i class="mlh-cr-ico" aria-hidden="true"></i><span><b>${title}</b><em>${tag}</em></span>${canRe ? `<button type="button" class="mlh-wxre" data-crre="${w.id}" title="Check now" aria-label="Check now"${w.busy ? " disabled" : ""}>↻</button>` : ""}</div>
+        ${body}${extra}
         ${warn ? `<div class="mlh-rc-note">${warn}</div>` : ""}
-        ${mode === "relay" && rem != null && w.last?.at ? `<div class="mlh-cr-foot">checked ${esc(new Date(w.last.at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }))}${w.last.err ? " · " + esc(w.last.err) : ""}</div>` : foot ? `<div class="mlh-cr-foot">${foot}</div>` : ""}
+        ${err ? `<div class="mlh-empty mlh-perr">${esc(err)}</div>` : ""}
+        ${foot || chk ? `<div class="mlh-cr-foot">${[foot, chk ? "checked " + esc(tm(chk)) : ""].filter(Boolean).join(" · ")}</div>` : ""}
       </div>
     </section>`;
   }
   function apClick(t) {
     if (t.closest("[data-apre]")) { apScan(true); return true; }
-    const cr = t.closest("[data-crre]"); if (cr) { const w = widById(cr.dataset.crre); if (w) crLookup(w); return true; }
+    const cr = t.closest("[data-crre]"); if (cr) { const w = widById(cr.dataset.crre); if (w) { if (w.mon) w.mon.chk = 0; crLookup(w); } return true; }
     const b = t.closest("[data-wa]"); if (!b) return false;
     const a = b.dataset.wa, w = b.dataset.wid ? widById(b.dataset.wid) : null, v = b.dataset.v;
     if (a === "addrcpt") { startOpen = false; if (!wid().some((x) => x.kind === "rcpt")) { const m = { id: newWid(), kind: "rcpt", col: 1, slot: 9 }; wid().push(m); savePrefs(); apScan(true); } render(); return true; }
     if (a === "addcredit") { startOpen = false; if (wid().filter((x) => x.kind === "credit").length < CR_MAX) { const m = { id: newWid(), kind: "credit", col: 1, slot: 9, mode: "gc", tot: 300, scope: "vertex" }; wid().push(m); widEdit = m.id; savePrefs(); } render(); return true; }
     if (!w) return false;
-    if (a === "crmode") { w.mode = v; w.last = null; }
+    if (a === "crmode") { if (w.mode !== v) { w.mode = v; w.last = null; w.key = ""; } }
     else if (a === "crscope") w.scope = v;
     else if (a === "crcur") w.cur = v;
+    else if (a === "crsax") { delete w.sa; delete w.mon; w.saErr = ""; }
     else return false;
-    savePrefs(); render(); if (w.mode === "relay") crAuto(); return true;
+    savePrefs(); render(); crAuto(); return true;
   }
   function apChange(t) {
+    if (t instanceof HTMLSelectElement && t.dataset.crconn) {
+      const w = widById(t.dataset.crconn); if (w) { w.conn = t.value; savePrefs(); render(); crLookup(w); } return true;
+    }
+    if (t instanceof HTMLTextAreaElement && t.dataset.cr === "sa") {
+      const w = widById(t.dataset.wid); if (!w) return true;
+      try {
+        const j = JSON.parse(t.value);
+        if (!j.client_email || !j.private_key || !j.project_id) throw new Error("This doesn't look like a service account key file");
+        w.sa = { client_email: j.client_email, private_key: j.private_key, project_id: j.project_id }; w.saErr = ""; delete w.mon;
+      } catch (e) { w.saErr = /JSON/.test(String(e)) ? "Paste the whole .json file (it starts with {)" : String(e.message || e); }
+      savePrefs(); render(); if (w.sa) crLookup(w); return true;
+    }
     if (!(t instanceof HTMLInputElement)) return false;
     if (t.dataset.apr) {
       const P = apw(), m = t.dataset.apr, i = Number(t.dataset.i), pr = (P.price[m] || ["", ""]).slice();
@@ -1497,12 +1635,12 @@
     if (t.dataset.cr) {
       const w = widById(t.dataset.wid); if (!w) return true;
       const k = t.dataset.cr, v = t.value.trim();
-      if (k === "bal") { w.bal = v === "" ? "" : Math.max(0, Number(v) || 0); w.at = v === "" ? "" : new Date().toISOString(); ap.at = 0; }
+      if (k === "bal") { w.bal = v === "" ? "" : Math.max(0, Number(v) || 0); w.at = v === "" ? "" : new Date().toISOString(); ap.at = 0; delete w.mon; }
       else if (k === "tot") w.tot = Math.max(0, Number(v) || 0) || 300;
       else w[k] = v.slice(0, k === "key" ? 300 : 200);
       savePrefs(); render();
-      if (k === "bal") apScan(true);
-      if (w.mode === "relay" && (k === "url" || k === "key")) { w.last = null; crLookup(w); }
+      if (k === "bal") { apScan(true); if (w.sa) crLookup(w); }
+      if ((w.mode === "relay" && (k === "url" || k === "key")) || (w.mode === "nano" && k === "key")) { w.last = null; crLookup(w); }
       return true;
     }
     return false;
