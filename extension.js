@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   /* ══════════════════════════════════════════════════════════
-   *  말랑 홈 (공유판) v1.34.1 · Celestial Editorial
+   *  말랑 홈 (공유판) v1.34.2 · Celestial Editorial
    *  마리나라 기본 홈(HomeBrowserHub.HomePage) 안에 새 홈을 그리고
    *  기본 내용은 숨긴다. 기본 홈의 버튼(새 채팅·최근 채팅 카드)은
    *  DOM에 그대로 남겨 두고 대신 눌러 주는 방식이라 앱 기능을 건드리지 않는다.
@@ -1407,12 +1407,39 @@
      마리나라가 토큰 수를 돌려주지 않아서 주고받은 글자 수로 어림 (이 기기에서 홈이 켜져 있을 때만, 생각 토큰은 모름) */
   const EXT_LS = "mlh-ext-usage-v1";
   const estTok = (str) => { const t = String(str || ""); const ko = (t.match(/[\u3131-\u318e\uac00-\ud7a3\u3040-\u30ff\u4e00-\u9fff]/g) || []).length; return Math.ceil(ko * 1.1 + (t.length - ko) / 4); };
-  function extStore() { try { const v = JSON.parse(localStorage.getItem(EXT_LS) || "null"); if (v && v.hours) return v; } catch {} return { hours: {} }; }
+  // 서버(마리나라 확장 저장소)에 하루 단위로 모아 둠 → 모든 기기 공통. 저장할 때 서버 값을 다시 읽어 합쳐서 기기끼리 덮어쓰지 않게
+  const ext = { cache: null, pending: {}, timer: 0, loaded: false };
+  const extAddTo = (days, day, m, a) => { const D = days[day] || (days[day] = {}), r = D[m] || (D[m] = [0, 0, 0]); r[0] += a[0]; r[1] += a[1]; r[2] += a[2]; };
+  async function extLoad() {
+    if (ext.loaded) return; ext.loaded = true;
+    try { const v = (await store?.get()) || {}; ext.cache = v.mallangExt && v.mallangExt.days ? v.mallangExt : { days: {} }; } catch { ext.cache = { days: {} }; ext.loaded = false; }
+    // 예전(이 기기에만 저장) 기록 옮기기
+    try { const old = JSON.parse(localStorage.getItem(EXT_LS) || "null"); if (old?.hours) { for (const [k, H] of Object.entries(old.hours)) for (const [m, r] of Object.entries(H)) { extAddTo(ext.pending, k.slice(0, 10), m, r); extAddTo(ext.cache.days, k.slice(0, 10), m, r); } localStorage.removeItem(EXT_LS); extFlushSoon(); } } catch {}
+  }
+  function extFlushSoon() { clearTimeout(ext.timer); ext.timer = setTimeout(extFlush, 15000); }
+  async function extFlush() {
+    if (!store || !Object.keys(ext.pending).length) return;
+    const add = ext.pending; ext.pending = {};
+    try {
+      const v = (await store.get()) || {}, cur = v.mallangExt && v.mallangExt.days ? v.mallangExt : { days: {} };
+      for (const [day, D] of Object.entries(add)) for (const [m, r] of Object.entries(D)) extAddTo(cur.days, day, m, r);
+      const cut = ymd(new Date(Date.now() - 70 * 86400000)); for (const d of Object.keys(cur.days)) if (d < cut) delete cur.days[d];
+      await store.patch({ mallangExt: cur }); ext.cache = cur;
+    } catch { for (const [day, D] of Object.entries(add)) for (const [m, r] of Object.entries(D)) extAddTo(ext.pending, day, m, r); extFlushSoon(); }
+  }
+  cleanups.push(() => { clearTimeout(ext.timer); extFlush(); });
   function extAdd(prov, model, p, o) {
-    const st = extStore(), k = hourKey(Date.now()), H = st.hours[k] || (st.hours[k] = {}), m = `${prov || "?"}${SEP}${model || "unknown"}`, r = H[m] || (H[m] = [0, 0, 0, 0]);
-    r[0] += p; r[1] += o; r[2] += 1;
-    const cut = hourKey(Date.now() - 70 * 86400000); for (const x of Object.keys(st.hours)) if (x < cut) delete st.hours[x];
-    try { localStorage.setItem(EXT_LS, JSON.stringify(st)); } catch {}
+    const day = ymd(new Date()), m = `${prov || "?"}${SEP}${model || "unknown"}`;
+    extAddTo(ext.pending, day, m, [p, o, 1]);
+    if (ext.cache) extAddTo(ext.cache.days, day, m, [p, o, 1]);
+    extFlushSoon();
+  }
+  // 영수증 계산용: 하루 묶음을 그날 0시 칸으로
+  function extHours() {
+    const out = {}, days = ext.cache?.days || {};
+    for (const [d, D] of Object.entries(days)) { const H = out[d + "T00"] = {}; for (const [m, r] of Object.entries(D)) H[m] = [r[0], r[1], r[2], 0]; }
+    if (!ext.cache) for (const [d, D] of Object.entries(ext.pending)) { const H = out[d + "T00"] || (out[d + "T00"] = {}); for (const [m, r] of Object.entries(D)) H[m] = [r[0], r[1], r[2], 0]; }
+    return out;
   }
   if (!window.__mlhRawSpy) {
     const orig = window.fetch;
@@ -1463,7 +1490,8 @@
       await Promise.all([worker(), worker(), worker()]);
       cache.chats = keep; apSaveCache();
       const hours = {};
-      for (const { h } of [...Object.values(keep), { h: extStore().hours }]) for (const [k, ms] of Object.entries(h || {})) {
+      await extLoad();
+      for (const { h } of [...Object.values(keep), { h: extHours() }]) for (const [k, ms] of Object.entries(h || {})) {
         const H = hours[k] || (hours[k] = {});
         for (const [m, r] of Object.entries(ms)) { const R = H[m] || (H[m] = [0, 0, 0, 0]); R[0] += r[0]; R[1] += r[1]; R[2] += r[2]; R[3] += r[3] || 0; }
       }
