@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   /* ══════════════════════════════════════════════════════════
-   *  말랑 홈 (공유판) v1.32.2 · Celestial Editorial
+   *  말랑 홈 (공유판) v1.33.0 · Celestial Editorial
    *  마리나라 기본 홈(HomeBrowserHub.HomePage) 안에 새 홈을 그리고
    *  기본 내용은 숨긴다. 기본 홈의 버튼(새 채팅·최근 채팅 카드)은
    *  DOM에 그대로 남겨 두고 대신 눌러 주는 방식이라 앱 기능을 건드리지 않는다.
@@ -1498,6 +1498,41 @@
     return all.filter((c) => hostOf(c.baseUrl || "") === h || String(c.baseUrl || "").includes(h));
   }
   // 중계 카드: 기록을 시작하기 전 몫을 마리나라 기록으로 (사이트 통화)
+  async function relayQpu(w, base) {
+    if (w.qpu?.at && Date.now() - w.qpu.at < 86400000) return w.qpu.v;
+    let v = 500000;
+    try { const st = (await getJ(base + "/api/status"))?.data || {}; v = Number(st.quota_per_unit) || v; const dt = String(st.quota_display_type || "").toUpperCase(); if (dt === "USD" && w.cur === "CNY" && Number(st.usd_exchange_rate) > 0) v = v / Number(st.usd_exchange_rate); } catch {}
+    w.qpu = { at: Date.now(), v }; return v;
+  }
+  const relayLogKey = (w) => "mlh-relay-log-" + (hostOf(w.url) || "site") + "-" + w.id;
+  function relayLogStore(w) {
+    let st = null; try { st = JSON.parse(localStorage.getItem(relayLogKey(w)) || "null"); } catch {}
+    if (!st || !Array.isArray(st.rows)) st = { rows: [], ids: {} };
+    if (!st.ids) { st.ids = {}; }
+    return st;
+  }
+  function relayLogSave(w, st) {
+    const cut = Date.now() - 70 * 86400000;
+    if (st.rows.some((r) => r[0] < cut)) st.rows = st.rows.filter((r) => r[0] >= cut);
+    if (Object.keys(st.ids).length > st.rows.length * 2 + 2000) { st.ids = {}; }
+    try { localStorage.setItem(relayLogKey(w), JSON.stringify(st)); } catch { try { st.ids = {}; st.rows = st.rows.slice(-20000); localStorage.setItem(relayLogKey(w), JSON.stringify(st)); } catch {} }
+  }
+  // 실시간 단가: New API /api/pricing → 100만 토큰당(사이트 단위) = model_ratio × 2, 출력 = × completion_ratio, 회당 = model_price
+  async function relayPricing(w, base) {
+    try {
+      const j = await getJ(base + "/api/pricing");
+      const list = Array.isArray(j?.data) ? j.data : Array.isArray(j?.data?.models) ? j.data.models : null;
+      if (!list) throw new Error(j?.message || "no list");
+      const qpu = await relayQpu(w, base), scale = 500000 / qpu, rows = {};
+      for (const x of list) {
+        const name = nm(x.model_name || x.model || ""); if (!name) continue;
+        if (Number(x.quota_type) === 1) rows[name] = { c: (Number(x.model_price) || 0) * scale };
+        else { const i = (Number(x.model_ratio) || 0) * 2 * scale; rows[name] = { t: [i, i * (Number(x.completion_ratio) || 1)] }; }
+      }
+      w.lp = { at: Date.now(), rows, n: Object.keys(rows).length, err: "" };
+    } catch (e) { w.lp = { at: Date.now(), rows: w.lp?.rows || null, n: w.lp?.n || 0, err: errText(e) }; }
+    savePrefs(); render();
+  }
   // 이 사이트로 보낸 기록 고르기: 연결 종류 + 그 연결의 모델 이름 (연결에 모델이 없으면 종류만)
   function relayMatcher(w) {
     const cs = relayConns(w), pairs = new Set(), anyOf = new Set();
@@ -1510,6 +1545,8 @@
     if (own && own.some((x) => x !== "" && x != null)) return fromUSD(apCost(m, p, o, n) || 0, w.cur === "CNY" ? "CNY" : "USD");
     const name = apModelName(m), key = nm(name), linky = /linkapi/i.test(hostOf(w.url)), mul = Number(w.mul) > 0 ? Number(w.mul) : linky ? 1.6 : 1, noMul = /-r$/i.test(name.trim());
     const cur = w.cur === "CNY" ? "CNY" : "USD";
+    const live = w.lp?.rows?.[key];
+    if (live) { if (live.c != null) return n * live.c; if (live.t) return (p * live.t[0] + o * live.t[1]) / 1e6 * (noMul ? 1 : mul); }
     if (linky) {
       if (/^\[free\]/i.test(key)) return 0;
       if (LINK_C2[key] != null) return n * LINK_C2[key];
@@ -1529,7 +1566,7 @@
     const L = w.last; if (!L) return null;
     if (!L.trk) return { today: L.today, month: L.month };
     const now = new Date(), t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime(), m0 = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
-    const ft = L.src === "logs" ? 0 : relayFill(w, t0, Math.max(t0, L.daySince || t0)), fm = L.src === "logs" ? 0 : relayFill(w, m0, Math.max(m0, L.monthSince || m0));
+    const ft = relayFill(w, t0, Math.max(t0, L.daySince || t0)), fm = relayFill(w, m0, Math.max(m0, L.monthSince || m0));
     return { today: L.today + ft, month: L.month + fm, ft, fm };
   }
   function apTotals() {
@@ -1777,21 +1814,49 @@
         if (w.rbal !== "" && w.rbal != null && w.rbase == null) w.rbase = U;
         const rem = w.rbal !== "" && w.rbal != null ? Math.max(0, Number(w.rbal) - (U - (Number(w.rbase) || 0))) : null;
         let today = Math.max(0, U - T.d.u), month = Math.max(0, U - T.m.u), daySince = T.d.since, monthSince = T.m.since, src = "trk";
-        // 사용 기록(키로 조회)이 열려 있으면 요청마다의 시각·금액으로 오늘·이번 달을 정확히 (이전 기록까지)
+        // 키 사용 로그: 요청마다 시각·금액 (최근 1,000건씩) → 이 기기에 쌓아 두고 오늘·이번 달 계산
+        let logInfo = "", logN = 0;
         try {
-          let qpu = 500000, mul = 1;
-          try { const st = (await getJ(base + "/api/status"))?.data || {}; qpu = Number(st.quota_per_unit) || qpu; if (String(st.quota_display_type || "").toUpperCase() === "CNY") mul = Number(st.usd_exchange_rate) || 1; } catch {}
-          let td = 0, mo = 0, ok = 0;
+          const qpu = await relayQpu(w, base);
+          const store = relayLogStore(w), before = store.rows.length;
+          let capped = false, okAny = false, lastErr = "";
           for (const k of keys) {
-            const j = await getJ(`${base}/api/log/token?key=${encodeURIComponent(k)}`);
-            const rows = Array.isArray(j?.data) ? j.data : Array.isArray(j?.data?.items) ? j.data.items : null;
-            if (!j || j.success === false || !rows) throw new Error(j?.message || "no logs");
-            for (const r of rows) { const ts = (Number(r.created_at) || 0) * 1000, q = (Number(r.quota) || 0) / qpu * mul; if (ts >= m0) mo += q; if (ts >= t0) td += q; }
-            ok++;
+            let j = null;
+            const tries = [...new Set([w.logWay, "hdr", "q", "qs"].filter(Boolean))];
+            for (const way of tries) {
+              try {
+                const url = way === "hdr" ? `${base}/api/log/token` : `${base}/api/log/token?key=${encodeURIComponent(way === "qs" ? k.replace(/^sk-/, "") : k)}`;
+                const r = await getJ(url, way === "hdr" ? { headers: { Authorization: "Bearer " + k } } : undefined);
+                const rows = Array.isArray(r?.data) ? r.data : Array.isArray(r?.data?.items) ? r.data.items : Array.isArray(r?.data?.logs) ? r.data.logs : null;
+                if (!r || r.success === false || !rows) throw new Error(r?.message || "no list");
+                j = rows; w.logWay = way; break;
+              } catch (e) { lastErr = errText(e); }
+            }
+            if (!j) continue;
+            okAny = true; if (j.length >= 1000) capped = true;
+            for (const r of j) {
+              const t = (Number(r.created_at) || 0) * 1000; if (!t) continue;
+              const id = String(r.id ?? `${r.created_at}:${r.quota}:${r.model_name}:${r.prompt_tokens}`);
+              if (store.ids[id]) continue; store.ids[id] = 1;
+              store.rows.push([t, (Number(r.quota) || 0) / qpu, String(r.model_name || "")]);
+            }
           }
-          if (ok) { today = td; month = mo; daySince = t0; monthSince = m0; src = "logs"; }
-        } catch { /* 막혀 있으면 기록 방식 그대로 */ }
-        w.last = { at: Date.now(), trk: true, src, used: U, today, month, daySince, monthSince, rem, total: rem != null ? Number(w.rbal) : null, acctErr };
+          if (!okAny) throw new Error(lastErr || "no logs");
+          relayLogSave(w, store);
+          const first = store.rows.reduce((a, r) => Math.min(a, r[0]), Infinity);
+          let td = 0, mo = 0;
+          for (const [t, q] of store.rows) { if (t >= m0) mo += q; if (t >= t0) td += q; }
+          // 1,000건 한도에 걸렸고 그보다 앞선 기록이 없으면, 그 앞은 채팅 기록으로 채움(아래 relayPeriods)
+          const cover = store.first0 ? Math.min(store.first0, first) : first;
+          today = td; month = mo; src = "logs";
+          daySince = capped && cover > t0 ? cover : t0; monthSince = capped && cover > m0 ? cover : m0;
+          if (!capped && first < Infinity) store.first0 = Math.min(store.first0 || first, m0);
+          logN = store.rows.length; logInfo = `✓ usage log · ${logN.toLocaleString("en-US")} requests kept${store.rows.length > before ? ` (+${store.rows.length - before})` : ""}`;
+          relayLogSave(w, store);
+        } catch (e) { logInfo = "usage log: " + errText(e); }
+        // 실시간 단가표 (6시간마다)
+        if (!w.lp || Date.now() - (w.lp.at || 0) > 6 * 3600000) relayPricing(w, base).catch(() => {});
+        w.last = { at: Date.now(), trk: true, src, used: U, today, month, daySince, monthSince, rem, total: rem != null ? Number(w.rbal) : null, acctErr, logInfo };
       } catch (e) { w.last = { at: Date.now(), err: (acctErr ? acctErr + " · " : "") + "Key: " + errText(e) }; }
     } finally { w.busy = false; savePrefs(); render(); }
   }
@@ -1858,7 +1923,8 @@
       const PR = relayPeriods(w);
       extra += `<div class="mlh-rc-line"><span>Today</span><i></i><b>${money(PR.today)}</b><em>${won(PR.today, rate)}</em></div>`;
       extra += `<div class="mlh-rc-line"><span>This month</span><i></i><b>${money(PR.month)}</b><em>${won(PR.month, rate)}</em></div>`;
-      extra += `<div class="mlh-cr-tag">${L.src === "logs" ? "✓ from the site's usage log" : PR.fm > 0 || PR.ft > 0 ? `before ${esc(sinceTxt(L.monthSince))}: estimated from Marinara chats · after: the site's own count` : `counting since ${esc(sinceTxt(L.monthSince))} (the site's own count)`}</div>`;
+      extra += `<div class="mlh-cr-tag">${L.src === "logs" ? (PR.fm > 0 ? `from the site's usage log · before ${esc(sinceTxt(L.monthSince))}: estimated from Marinara chats` : "✓ from the site's usage log") : PR.fm > 0 || PR.ft > 0 ? `before ${esc(sinceTxt(L.monthSince))}: estimated from Marinara chats · after: the site's own count` : `counting since ${esc(sinceTxt(L.monthSince))} (the site's own count)`}</div>`;
+      extra += `<div class="mlh-cr-tag">${esc(L.logInfo || "")}${w.lp ? ` · ${w.lp.err ? "live prices: " + esc(w.lp.err) : `✓ live prices · ${w.lp.n} models`}` : ""}</div>`;
       if (rem == null) warn = "Enter the balance shown on the site in Edit once — it will go down by what your keys spend.";
       chk = L.at;
     } else if (w.last && !w.last.err && w.last.total >= 0) {
