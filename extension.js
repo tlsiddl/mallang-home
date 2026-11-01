@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   /* ══════════════════════════════════════════════════════════
-   *  말랑 홈 (공유판) v1.36.0 · Celestial Editorial
+   *  말랑 홈 (공유판) v1.36.1 · Celestial Editorial
    *  마리나라 기본 홈(HomeBrowserHub.HomePage) 안에 새 홈을 그리고
    *  기본 내용은 숨긴다. 기본 홈의 버튼(새 채팅·최근 채팅 카드)은
    *  DOM에 그대로 남겨 두고 대신 눌러 주는 방식이라 앱 기능을 건드리지 않는다.
@@ -1378,7 +1378,7 @@
       const h = out[k] || (out[k] = {}), r = h[m] || (h[m] = [0, 0, 0, 0]);
       r[0] += p; r[1] += o; r[2] += Math.max(1, Number(g.requestCount) || 1); r[3] = (r[3] || 0) + th;
     };
-    while (pages++ < 80) {
+    while (pages++ < Math.ceil(8000 / AP_PAGE)) {
       const rows = await api(`/chats/${encodeURIComponent(c.id)}/messages?limit=${AP_PAGE}${before ? "&before=" + encodeURIComponent(before) : ""}`);
       if (!Array.isArray(rows) || !rows.length) break;
       for (const m of rows) {
@@ -1389,6 +1389,8 @@
         }
         add(m.extra, m.createdAt);
       }
+      // 브라우저가 화면을 그리고 입력을 처리할 기회를 준다.
+      await new Promise((resolve) => setTimeout(resolve, 0));
       const first = rows[0];
       if (rows.length < AP_PAGE || Date.parse(first.createdAt || "") < fromMs) break;
       before = `${first.createdAt}|${encodeURIComponent(first.id)}`;
@@ -1465,10 +1467,28 @@
     window.fetch = spy;
     cleanups.push(() => { if (window.fetch === spy) window.fetch = orig; window.__mlhRawSpy = false; });
   }
+  // 진행률은 텍스트만 바꾸고, 완료 뒤에도 관련 카드만 갱신한다.
+  function apPaint(progressOnly = false) {
+    if (!root) return;
+    const foot = root.querySelector(".mlh-rcptcard .mlh-rc-foot");
+    if (foot) {
+      const label = foot.querySelector("span"), button = foot.querySelector("[data-apre]");
+      if (label) label.textContent = ap.busy ? `reading ${ap.done}/${ap.todo || "…"}` : `checked ${ap.at ? new Date(ap.at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }) : "—"}`;
+      if (button) button.disabled = ap.busy;
+    }
+    if (progressOnly || drag || adrag || arranging) return;
+    for (const w of wid()) {
+      if ((w.kind !== "rcpt" && w.kind !== "credit") || widEdit === w.id) continue;
+      const slot = [...root.querySelectorAll(".mlh-slot[data-card]")].find((el) => el.dataset.card === String(w.id));
+      const card = slot?.querySelector(":scope > .mlh-card");
+      if (!card || card.contains(document.activeElement) && document.activeElement.matches("input, textarea, select")) continue;
+      card.outerHTML = widHTML(w);
+    }
+  }
   async function apScan(force) {
     if (ap.busy || !wid().some((w) => w.kind === "rcpt" || w.kind === "credit")) return;
     if (!force && Date.now() - ap.at < AP_STALE) return;
-    ap.busy = true; ap.err = ""; ap.done = 0; render();
+    ap.busy = true; ap.err = ""; ap.done = 0; ap.todo = 0; apPaint(true);
     fxLoad(false);
     try {
       const from = apFrom(), fromMs = Date.parse(from), cache = apCache();
@@ -1484,10 +1504,12 @@
           const c = todo[i++];
           try { keep[c.id] = { k: `${c.lastMessageAt || ""}|${c.updatedAt || ""}`, h: await apScanChat(c, fromMs) }; }
           catch { /* 이 방은 다음에 */ }
-          ap.done++; if (ap.done % 4 === 0) render();
+          ap.done++; if (ap.done % 4 === 0 || ap.done === ap.todo) apPaint(true);
         }
       };
-      await Promise.all([worker(), worker(), worker()]);
+      // iOS는 동시 처리량을 낮춰 메모리를 아끼고, 다른 기기는 기존 속도를 유지한다.
+      const ios = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+      await Promise.all(Array.from({ length: ios ? 2 : 3 }, () => worker()));
       cache.chats = keep; apSaveCache();
       const hours = {};
       await extLoad();
@@ -1498,7 +1520,7 @@
       ap.hours = hours; ap.from = from; ap.at = Date.now();
       if (wid().some((w) => w.kind === "rcpt")) await apGoogle();
     } catch (e) { ap.err = "Couldn't read usage: " + (e?.message || e); }
-    finally { ap.busy = false; render(); }
+    finally { ap.busy = false; apPaint(); }
   }
   const apModelName = (m) => m.split(SEP)[1] || m;
   const apProv = (m) => m.includes(SEP) ? m.split(SEP)[0] : "";
