@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   /* ══════════════════════════════════════════════════════════
-   *  말랑 홈 (공유판) v1.34.2 · Celestial Editorial
+   *  말랑 홈 (공유판) v1.35.0 · Celestial Editorial
    *  마리나라 기본 홈(HomeBrowserHub.HomePage) 안에 새 홈을 그리고
    *  기본 내용은 숨긴다. 기본 홈의 버튼(새 채팅·최근 채팅 카드)은
    *  DOM에 그대로 남겨 두고 대신 눌러 주는 방식이라 앱 기능을 건드리지 않는다.
@@ -1661,10 +1661,13 @@
       for (const [t, q, mdl] of st.rows) if (t >= t0) { const x = by[mdl || "?"] || (by[mdl || "?"] = { q: 0, n: 0 }); x.q += q; x.n++; }
       for (const [mdl, x] of Object.entries(by)) out.push({ name: mdl, site: w.name || hostOf(w.url), src: "site", cost: toUSD(x.q, w.cur === "CNY" ? "CNY" : "USD"), n: x.n });
     }
+    const nanoW = wid().filter((x) => x.kind === "credit" && x.mode === "nano" && x.last?.nu);
+    for (const w of nanoW) for (const [mdl, r] of Object.entries(w.last.nu.days[w.last.nu.today] || {})) out.push({ name: mdl, site: w.name || "NanoGPT", src: "site", cost: r.c, n: r.n, tok: r.i + r.o + r.th });
     const chat = {};
     for (const [k, H] of Object.entries(ap.hours)) { if (Date.parse(k + ":00:00") < t0) continue;
       for (const [m, r] of Object.entries(H)) {
         if (vx && vx(m)) continue;
+        if (nanoW.length && apProv(m) === "nanogpt") continue;
         const rw = relayFor(m); if (rw && logged.includes(rw)) continue;
         const x = chat[m] || (chat[m] = { p: 0, o: 0, n: 0 }); x.p += r[0]; x.o += r[1]; x.n += r[2];
       } }
@@ -1888,8 +1891,26 @@
       }
       if (w.mode === "nano") {
         const last = { at: Date.now() };
+        const nkeys = String(w.key || "").split(/[\s,]+/).filter(Boolean).slice(0, 12);
+        // 키별 사용 내역 (날짜·모델별 요청·토큰·금액, UTC 날짜) — 이번 달 1일(UTC)부터
+        if (nkeys.length) {
+          try {
+            const now = new Date(), iso = (d) => d.toISOString().slice(0, 10);
+            const from = iso(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1))), to = iso(now);
+            const days = {};
+            for (const k of nkeys) {
+              const j = await getJ(`https://api.nano-gpt.com/api/v1/usage?from=${from}&to=${to}&group_by=day,model`, { headers: { Authorization: "Bearer " + k } })
+                .catch(() => getJ(`https://nano-gpt.com/api/v1/usage?from=${from}&to=${to}&group_by=day,model`, { headers: { Authorization: "Bearer " + k } }));
+              for (const x of j.byDayModel || []) {
+                const D = days[x.date] || (days[x.date] = {}), r = D[x.model] || (D[x.model] = { c: 0, n: 0, i: 0, o: 0, th: 0 });
+                r.c += Number(x.netCostUsd ?? x.costUsd) || 0; r.n += Number(x.requests) || 0; r.i += Number(x.inputTokens) || 0; r.o += Number(x.outputTokens) || 0; r.th += Number(x.reasoningTokens) || 0;
+              }
+            }
+            last.nu = { days, today: iso(now), at: Date.now() };
+          } catch (e) { last.errUse = "Usage: " + errText(e); }
+        }
         if (w.key) {
-          try { const j = await getJ("https://nano-gpt.com/api/check-balance", { method: "POST", headers: { "x-api-key": String(w.key).trim() } }); last.bal = Number(j.usd_balance); if (!(last.bal >= 0)) throw new Error("unexpected answer"); }
+          try { const j = await getJ("https://nano-gpt.com/api/check-balance", { method: "POST", headers: { "x-api-key": nkeys[0] || String(w.key).trim() } }); last.bal = Number(j.usd_balance); if (!(last.bal >= 0)) throw new Error("unexpected answer"); }
           catch (e) { last.err = "Balance: " + errText(e); }
         }
         // 구독: 골라 둔 연결, 없으면 나노지피티 연결을 차례로 시도
@@ -1914,6 +1935,10 @@
           if (!T.m || T.m.k !== ym) T.m = { k: ym, b: had && T.lastAt < m0 ? T.lastB : B, since: had && T.lastAt < m0 ? m0 : Date.now() };
           T.lastB = B; T.lastAt = Date.now();
           last.today = Math.max(0, T.d.b - B); last.month = Math.max(0, T.m.b - B); last.daySince = T.d.since; last.monthSince = T.m.since;
+        }
+        if (last.nu) {
+          let td = 0, mo = 0; for (const [d, D] of Object.entries(last.nu.days)) for (const r of Object.values(D)) { mo += r.c; if (d === last.nu.today) td += r.c; }
+          last.today = td; last.month = mo; last.fromUsage = true;
         }
         w.last = last; return;
       }
@@ -2061,10 +2086,11 @@
       if (L.today != null) {
         const st = (t) => new Date(t).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
         extra += `<div class="mlh-rc-line"><span>Today</span><i></i><b>${money(L.today)}</b><em>${won(L.today, rate)}</em></div><div class="mlh-rc-line"><span>This month</span><i></i><b>${money(L.month)}</b><em>${won(L.month, rate)}</em></div>`;
-        if (L.monthSince > new Date(new Date().getFullYear(), new Date().getMonth(), 1).getTime() + 60000) extra += `<div class="mlh-cr-tag">counting since ${esc(st(L.monthSince))} — from the balance going down</div>`;
+        if (L.fromUsage) extra += `<div class="mlh-cr-tag">✓ from NanoGPT's usage log (days in UTC — "today" starts 9 AM KST)</div>`;
+        else if (L.monthSince > new Date(new Date().getFullYear(), new Date().getMonth(), 1).getTime() + 60000) extra += `<div class="mlh-cr-tag">counting since ${esc(st(L.monthSince))} — from the balance going down</div>`;
       }
       if (S) extra += `<div class="mlh-cr-subs"><div class="mlh-ptl">Subscription · ${S.active ? "active" : esc(S.state || "inactive")}</div>${bar(S.d, "Today")}${bar(S.wk, "This week")}${S.end ? `<div class="mlh-cr-sub">renews ${esc(new Date(S.end).toLocaleDateString("en-US", { month: "short", day: "numeric" }))}</div>` : ""}</div>`;
-      err = [L.err, L.errSub].filter(Boolean).join(" · ");
+      err = [L.err, L.errSub, L.errUse].filter(Boolean).join(" · ");
       chk = L.at || 0;
     } else if (w.last && w.last.trk) {
       const L = w.last, sinceTxt = (t) => new Date(t).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
@@ -2114,7 +2140,7 @@
           ${chips("Currency", "crcur", w, "cur", [["USD", "$"], ["CNY", "CN¥"]])}
           <label class="mlh-wxset"><span class="mlh-ptl">Marinara connections for this site (the receipt uses the site's own total for them)</span><select class="mlh-input" data-crconn="${w.id}"><option value="">Auto — ${(() => { const n = w.conn ? 0 : relayConns(w).length; return w.conn ? "match by site address" : n ? `${n} connection${n > 1 ? "s" : ""} use ${esc(hostOf(w.url))}` : "no connection uses this address yet"; })()}</option>${(data.conns || []).filter((c) => !/nano|google|anthropic|claude/i.test(String(c.provider || ""))).map((c) => `<option value="${esc(c.id)}"${w.conn === c.id ? " selected" : ""}>${esc(c.name || c.model || c.id)} · ${esc(c.provider)}</option>`).join("")}</select></label>
           <div class="mlh-empty">Works with sites built on One API / New API. Checks every 30 min or with ↻.</div>`,
-      nano: () => `${fld("key", "API key for the balance (saved only in Mallang Home)", "password", "your NanoGPT key", 'autocomplete="off"')}
+      nano: () => `${fld("key", "API keys — every NanoGPT key you use (agents too), separated by spaces. The first one is used for the balance.", "password", "your NanoGPT keys", 'autocomplete="off"')}
           <label class="mlh-wxset"><span class="mlh-ptl">Subscription — read through this connection</span><select class="mlh-input" data-crconn="${w.id}"><option value="">Auto — ${nanoConns.length ? `${nanoConns.length} NanoGPT connection${nanoConns.length > 1 ? "s" : ""}` : "no NanoGPT connection"}</option>${nanoConns.map((c) => `<option value="${esc(c.id)}"${w.conn === c.id ? " selected" : ""}>${esc(c.name || c.model || c.id)}</option>`).join("")}</select></label>
           <div class="mlh-empty">The subscription is read through Marinara, so no key is needed for it.</div>` };
     const tools = ed ? `<div class="mlh-ptools">${moveTools(w)}${chips("Type", "crmode", w, "mode", [["gc", "Google Cloud"], ["relay", "Relay API"], ["nano", "NanoGPT"]])}
