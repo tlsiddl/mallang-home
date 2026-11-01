@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   /* ══════════════════════════════════════════════════════════
-   *  말랑 홈 (공유판) v1.30.0 · Celestial Editorial
+   *  말랑 홈 (공유판) v1.31.0 · Celestial Editorial
    *  마리나라 기본 홈(HomeBrowserHub.HomePage) 안에 새 홈을 그리고
    *  기본 내용은 숨긴다. 기본 홈의 버튼(새 채팅·최근 채팅 카드)은
    *  DOM에 그대로 남겨 두고 대신 눌러 주는 방식이라 앱 기능을 건드리지 않는다.
@@ -1489,6 +1489,14 @@
 
   // 영수증 합계: 사이트마다 가장 정확한 출처 하나만 (겹쳐 세지 않게)
   //  Vertex = 구글 모니터링(있으면) · 중계 사이트 = 그 사이트가 알려 준 사용액(연결을 골라 둔 경우) · 나머지 = 마리나라 기록 × 단가
+  const hostOf = (u) => { try { return new URL(/^https?:/i.test(String(u)) ? u : "https://" + u).hostname.replace(/^(www|api)\./, ""); } catch { return ""; } };
+  // 이 중계 카드에 해당하는 마리나라 연결들: 골라 둔 게 있으면 그것, 없으면 사이트 주소가 같은 연결 전부
+  function relayConns(w) {
+    const all = data.conns || [];
+    if (w.conn) return all.filter((c) => c.id === w.conn);
+    const h = hostOf(w.url); if (!h) return [];
+    return all.filter((c) => hostOf(c.baseUrl || "") === h || String(c.baseUrl || "").includes(h));
+  }
   function apTotals() {
     const now = new Date(), t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime(), m0 = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
     const T = apSum(t0), M = apSum(m0), rows = {};
@@ -1498,11 +1506,15 @@
     for (const [p, s] of Object.entries(M.sites)) { const r = row(p); r.m = s.cost; r.mn = s.n; r.un = s.unpriced; }
     if (ap.gm?.month) { const r = row("google_vertex"), a = monCost(ap.gm.today), b = monCost(ap.gm.month); r.t = a.c; r.m = b.c; r.src = "google"; r.un = b.un; }
     for (const w of wid()) {
-      if (w.kind !== "credit" || w.mode !== "relay" || !w.conn || !w.last || w.last.err) continue;
-      const conn = (data.conns || []).find((c) => c.id === w.conn); if (!conn) continue;
-      const r = row(conn.provider), cur = w.cur === "CNY" ? "CNY" : "USD";
-      if (w.last.month != null) { r.m = toUSD(w.last.month, cur); r.src = "site"; r.un = 0; r.name = w.name || conn.name || "Relay"; }
-      if (w.last.today != null) r.t = toUSD(w.last.today, cur);
+      if (w.kind !== "credit" || w.mode !== "relay" || !w.last || !w.last.acct) continue;
+      const provs = [...new Set(relayConns(w).map((c) => c.provider).filter(Boolean))]; if (!provs.length) continue;
+      const cur = w.cur === "CNY" ? "CNY" : "USD";
+      // 같은 사이트의 공급자 칸이 여러 개면 첫 칸에 사이트 합계를 넣고 나머지는 비움(겹쳐 세지 않게)
+      provs.forEach((p, i) => {
+        const r = row(p);
+        if (i === 0) { if (w.last.month != null) { r.m = toUSD(w.last.month, cur); r.src = "site"; r.un = 0; r.name = w.name || "Relay"; } if (w.last.today != null) r.t = toUSD(w.last.today, cur); }
+        else if (w.last.month != null) delete rows[p];
+      });
     }
     const list = Object.values(rows).filter((r) => r.t || r.m || r.mn || r.src !== "chat").sort((a, b) => b.m - a.m);
     return { T, M, list, today: list.reduce((a, r) => a + r.t, 0), month: list.reduce((a, r) => a + r.m, 0), un: list.reduce((a, r) => a + r.un, 0) };
@@ -1687,19 +1699,38 @@
         w.last = last; return;
       }
       const base = String(w.url || "").trim().replace(/\/+$/, "").replace(/\/v1$/, ""), key = String(w.key || "").trim();
-      if (!base || !key) { w.last = { at: Date.now(), err: "Add the site address and key in Edit" }; return; }
+      const tok = String(w.tok || "").trim(), uid = String(w.uid || "").trim();
+      if (!base || (!key && !(tok && uid))) { w.last = { at: Date.now(), err: "Add the site address and an access token (or key) in Edit" }; return; }
+      // ① 계정 접근 토큰 (New API: 개인 설정 → 시스템 접근 토큰) — 계정 잔액과 기간별 사용액이 정확
+      if (tok && uid) {
+        try {
+          let qpu = 500000, mul = 1, cur = "USD";
+          try { const st = (await getJ(base + "/api/status"))?.data || {}; qpu = Number(st.quota_per_unit) || qpu;
+            const dt = String(st.quota_display_type || "").toUpperCase(); if (dt === "CNY") { cur = "CNY"; mul = Number(st.usd_exchange_rate) || 1; } } catch {}
+          const conv = (q) => (Number(q) || 0) / qpu * mul;
+          const h = { Authorization: "Bearer " + tok, "New-Api-User": uid };
+          const me = await getJ(base + "/api/user/self", { headers: h });
+          if (me && me.success === false) throw new Error(me.message || "refused");
+          const rem = conv(me.data?.quota), used = conv(me.data?.used_quota);
+          const now = new Date(), sec = (t) => Math.floor(t / 1000);
+          const stat = async (from) => { const j = await getJ(`${base}/api/log/self/stat?type=0&start_timestamp=${sec(from)}&end_timestamp=${sec(Date.now())}`, { headers: h }); if (j && j.success === false) throw new Error(j.message || "refused"); return conv(j.data?.quota); };
+          let today = null, month = null;
+          try { today = await stat(new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()); month = await stat(new Date(now.getFullYear(), now.getMonth(), 1).getTime()); } catch {}
+          if (!w.curSet) w.cur = cur;
+          w.last = { at: Date.now(), total: rem + used, used, rem, month, today, acct: true };
+          return;
+        } catch (e) { w.last = { at: Date.now(), err: "Account: " + errText(e) }; if (!key) return; }
+      }
+      // ② API 키만 있을 때 — 키 한도·이 키가 쓴 총액만 알 수 있음
       try {
-        const h = { Authorization: "Bearer " + key }, end = ymd(new Date(Date.now() + 86400000)), d = new Date();
+        const h = { Authorization: "Bearer " + key }, end = ymd(new Date(Date.now() + 86400000));
         const s = await getJ(base + "/v1/dashboard/billing/subscription", { headers: h });
         const u = await getJ(`${base}/v1/dashboard/billing/usage?start_date=2023-01-01&end_date=${end}`, { headers: h });
         const total = Number(s.hard_limit_usd ?? s.system_hard_limit_usd), used = Number(u.total_usage) / 100;
         if (!(total >= 0) || !(used >= 0)) throw new Error("unexpected answer");
-        let month = null;
-        try { const um = await getJ(`${base}/v1/dashboard/billing/usage?start_date=${d.getFullYear()}-${pad2(d.getMonth() + 1)}-01&end_date=${end}`, { headers: h }); month = Number(um.total_usage) / 100; if (!(month >= 0)) month = null; } catch {}
-        let today = null;
-        try { const ut = await getJ(`${base}/v1/dashboard/billing/usage?start_date=${ymd(d)}&end_date=${end}`, { headers: h }); today = Number(ut.total_usage) / 100; if (!(today >= 0)) today = null; } catch {}
-        w.last = { at: Date.now(), total, used, rem: Math.max(0, total - used), month, today };
-      } catch (e) { w.last = { at: Date.now(), err: errText(e) }; }
+        // 한도 없는 키는 1억으로 나와서 잔액이 아님 → 이 키 총 사용액만
+        w.last = total >= 1e7 ? { at: Date.now(), keyOnly: true, used } : { at: Date.now(), total, used, rem: Math.max(0, total - used), keyLimit: true };
+      } catch (e) { w.last = { at: Date.now(), err: (w.last?.err ? w.last.err + " · " : "") + errText(e) }; }
     } finally { w.busy = false; savePrefs(); render(); }
   }
   function crAuto() {
@@ -1707,7 +1738,7 @@
     if (wid().some((w) => w.kind === "credit" && w.mode === "gc" && !w.sa && w.gcid)) gisLoad().catch(() => {});
     for (const w of wid()) {
       if (w.kind !== "credit" || w.busy) continue;
-      const ready = w.mode === "relay" ? w.key && w.url : w.mode === "nano" ? w.key || w.conn : w.at && (w.sa || (hasG(w) && oValid(w)));
+      const ready = w.mode === "relay" ? w.url && (w.key || (w.tok && w.uid)) : w.mode === "nano" ? w.key || w.conn : w.at && (w.sa || (hasG(w) && oValid(w)));
       const last = w.mode === "gc" ? w.mon?.chk || 0 : w.last?.at || 0;
       if (ready && Date.now() - last > 30 * 60000) crLookup(w);
     }
@@ -1758,8 +1789,12 @@
       if (S) extra = `<div class="mlh-cr-subs"><div class="mlh-ptl">Subscription · ${S.active ? "active" : esc(S.state || "inactive")}</div>${bar(S.d, "Today")}${bar(S.wk, "This week")}${S.end ? `<div class="mlh-cr-sub">renews ${esc(new Date(S.end).toLocaleDateString("en-US", { month: "short", day: "numeric" }))}</div>` : ""}</div>`;
       err = [L.err, L.errSub].filter(Boolean).join(" · ");
       chk = L.at || 0;
+    } else if (w.last && w.last.keyOnly) {
+      sub = `this key has used ${money(w.last.used)} in total`;
+      warn = "This key has no spending limit, so it can't show the account balance. Add the site's access token in Edit to see the balance and today / this month.";
+      chk = w.last.at;
     } else if (w.last && !w.last.err && w.last.total >= 0) {
-      total = w.last.total; rem = w.last.rem; sub = `used ${money(w.last.used)} of ${money(w.last.total)}`;
+      total = w.last.total; rem = w.last.rem; sub = w.last.acct ? `used ${money(w.last.used)} in total` : `this key: used ${money(w.last.used)} of its ${money(w.last.total)} limit`;
       if (w.last.today != null) extra += `<div class="mlh-rc-line"><span>Today</span><i></i><b>${money(w.last.today)}</b><em>${won(w.last.today, rate)}</em></div>`;
       if (w.last.month != null) extra += `<div class="mlh-rc-line"><span>This month</span><i></i><b>${money(w.last.month)}</b><em>${won(w.last.month, rate)}</em></div>`;
       chk = w.last.at;
@@ -1787,9 +1822,11 @@
           ${hasG(w) ? "" : chips("Count", "crscope", w, "scope", [["vertex", "Vertex only"], ["google", "All Google"]])}
           <div class="mlh-empty">Each time you enter the balance, it starts counting again from now. Costs use the prices on the API receipt.</div>`,
       relay: () => `${fld("url", "Site address", "url", "https://api.linkapi.ai", 'autocomplete="off"')}
-          ${fld("key", "API key (saved only in Mallang Home)", "password", "sk-…", 'autocomplete="off"')}
+          ${fld("tok", "Access token — site ▸ Personal settings ▸ System access token (saved only in Mallang Home)", "password", "the long token from your account page", 'autocomplete="off"')}
+          ${fld("uid", "User ID — shown on the same page", "text", "e.g. 1234", 'autocomplete="off" inputmode="numeric"')}
+          ${fld("key", "…or an API key (only shows what that key used)", "password", "sk-…", 'autocomplete="off"')}
           ${chips("Currency", "crcur", w, "cur", [["USD", "$"], ["CNY", "CN¥"]])}
-          <label class="mlh-wxset"><span class="mlh-ptl">Which Marinara connection is this site? (lets the receipt use the site's own total)</span><select class="mlh-input" data-crconn="${w.id}"><option value="">— none —</option>${(data.conns || []).filter((c) => !/nano|google|anthropic|claude/i.test(String(c.provider || ""))).map((c) => `<option value="${esc(c.id)}"${w.conn === c.id ? " selected" : ""}>${esc(c.name || c.model || c.id)} · ${esc(c.provider)}</option>`).join("")}</select></label>
+          <label class="mlh-wxset"><span class="mlh-ptl">Marinara connections for this site (the receipt uses the site's own total for them)</span><select class="mlh-input" data-crconn="${w.id}"><option value="">Auto — ${(() => { const n = w.conn ? 0 : relayConns(w).length; return w.conn ? "match by site address" : n ? `${n} connection${n > 1 ? "s" : ""} use ${esc(hostOf(w.url))}` : "no connection uses this address yet"; })()}</option>${(data.conns || []).filter((c) => !/nano|google|anthropic|claude/i.test(String(c.provider || ""))).map((c) => `<option value="${esc(c.id)}"${w.conn === c.id ? " selected" : ""}>${esc(c.name || c.model || c.id)} · ${esc(c.provider)}</option>`).join("")}</select></label>
           <div class="mlh-empty">Works with sites built on One API / New API. Checks every 30 min or with ↻.</div>`,
       nano: () => `${fld("key", "API key for the balance (saved only in Mallang Home)", "password", "your NanoGPT key", 'autocomplete="off"')}
           <label class="mlh-wxset"><span class="mlh-ptl">Subscription — read through this connection</span><select class="mlh-input" data-crconn="${w.id}"><option value="">— none —</option>${nanoConns.map((c) => `<option value="${esc(c.id)}"${w.conn === c.id ? " selected" : ""}>${esc(c.name || c.model || c.id)}</option>`).join("")}</select></label>
@@ -1799,7 +1836,7 @@
         ${(kinds[mode] || kinds.gc)()}
         <div class="mlh-pfoot"><button type="button" class="mlh-link" data-wa="del" data-wid="${w.id}">Delete</button></div>${delTools(w, "Delete this credit widget?")}</div>` : "";
     const hint = mode === "gc" ? "Tap Edit and enter your remaining credit ☁" : w.busy ? "Checking…" : mode === "nano" ? (w.key ? "" : "Add your key in Edit to see the balance ✦") : "Tap Edit and add the site and key ✦";
-    const body = rem == null ? (hint ? `<div class="mlh-empty">${esc(hint)}</div>` : "")
+    const body = rem == null ? (w.last?.keyOnly ? `<div class="mlh-cr-sub">${sub}</div>` : hint ? `<div class="mlh-empty">${esc(hint)}</div>` : "")
       : `<div class="mlh-cr-big"><b>${money(rem)}</b>${total > 0 ? `<span>/ ${money(total)}</span>` : ""}</div>
         ${rate > 0 ? `<div class="mlh-cr-won">${won(rem, rate)}</div>` : ""}
         ${total > 0 ? `<div class="mlh-cr-bar"><i style="width:${pct.toFixed(1)}%"></i></div>` : ""}
@@ -1831,7 +1868,7 @@
     if (!w) return false;
     if (a === "crmode") { if (w.mode !== v) { w.mode = v; w.last = null; w.key = ""; } }
     else if (a === "crscope") w.scope = v;
-    else if (a === "crcur") w.cur = v;
+    else if (a === "crcur") { w.cur = v; w.curSet = true; }
     else if (a === "apdisp") apw().disp = v;
     else if (a === "apscur") { const prov = b.dataset.prov; if (prov != null) apw().siteCur[prov] = v; }
     else if (a === "appre") { const prov = b.dataset.prov, P = apw(); if (prov != null) { P.sitePre = { ...(P.sitePre || {}), [prov]: v }; if (PRESETS[v]) { P.siteCur[prov] = PRESETS[v].cur; } } }
@@ -1871,11 +1908,11 @@
       else if (k === "lag") { const old = w.lag === "" || w.lag == null ? 24 : Number(w.lag) || 0; w.lag = v === "" ? "" : Math.max(0, Math.min(72, Number(v) || 0)); const nw = w.lag === "" ? 24 : w.lag; if (w.at) { w.at = new Date(Date.parse(w.at) + (old - nw) * 3600000).toISOString(); delete w.mon; ap.at = 0; } }
       else if (k === "tot") w.tot = Math.max(0, Number(v) || 0) || (w.gcur === "KRW" ? "" : 300);
       else if (k === "grate") w.grate = v === "" ? "" : Math.max(0, Number(v) || 0);
-      else w[k] = v.slice(0, k === "key" ? 300 : 200);
+      else w[k] = v.slice(0, k === "key" || k === "tok" ? 400 : 200);
       savePrefs(); render();
       if (k === "bal" || k === "lag") { apScan(true); if (hasG(w)) crLookup(w); }
       if (k === "gcid" || k === "proj") { delete w.mon; if (k === "gcid") gTok.delete(oKey(w)); if (w.gcid) gisLoad().catch(() => {}); }
-      if ((w.mode === "relay" && (k === "url" || k === "key")) || (w.mode === "nano" && k === "key")) { w.last = null; crLookup(w); }
+      if ((w.mode === "relay" && (k === "url" || k === "key" || k === "tok" || k === "uid")) || (w.mode === "nano" && k === "key")) { w.last = null; crLookup(w); }
       return true;
     }
     return false;
