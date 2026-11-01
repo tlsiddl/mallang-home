@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   /* ══════════════════════════════════════════════════════════
-   *  말랑 홈 (공유판) v1.25.0 · Celestial Editorial
+   *  말랑 홈 (공유판) v1.25.1 · Celestial Editorial
    *  마리나라 기본 홈(HomeBrowserHub.HomePage) 안에 새 홈을 그리고
    *  기본 내용은 숨긴다. 기본 홈의 버튼(새 채팅·최근 채팅 카드)은
    *  DOM에 그대로 남겨 두고 대신 눌러 주는 방식이라 앱 기능을 건드리지 않는다.
@@ -1243,7 +1243,7 @@
     return p;
   };
   const ap = { busy: false, err: "", at: 0, done: 0, todo: 0, from: "", hours: {}, cache: null };
-  const AP_LS = "mlh-api-usage-v1";
+  const AP_LS = "mlh-api-usage-v2";
   function apCache() {
     if (ap.cache) return ap.cache;
     try { ap.cache = JSON.parse(localStorage.getItem(AP_LS) || "null"); } catch { ap.cache = null; }
@@ -1264,7 +1264,9 @@
     const add = (ex, ts) => {
       const t = Date.parse(ts || ""); if (!t || t < fromMs) return;
       const g = parseX(ex).generationInfo; if (!g || typeof g !== "object") return;
-      const p = Number(g.tokensPrompt) || 0, o = Number(g.tokensCompletion) || 0;
+      // 구글(Gemini·Vertex)은 생각(추론) 토큰을 출력 토큰과 따로 알려 줌 → 요금은 출력으로 매겨지니 더해 줌
+      // (OpenAI·Claude는 이미 출력 토큰 안에 들어 있어서 그대로)
+      const p = Number(g.tokensPrompt) || 0, o = (Number(g.tokensCompletion) || 0) + (/google|gemini|vertex/i.test(String(g.provider || "")) ? Number(g.tokensReasoning) || 0 : 0);
       if (!p && !o) return;
       const k = hourKey(t), m = `${g.provider || "?"}␟${g.model || "unknown"}`;
       const h = out[k] || (out[k] = {}), r = h[m] || (h[m] = [0, 0, 0]);
@@ -1366,7 +1368,7 @@
           <div class="mlh-rc-prices">${apModels().map((m) => { const pr = P.price[m] || []; return `<label><span title="${esc(m)}">${esc(m)}</span><input class="mlh-input" type="number" min="0" step="any" inputmode="decimal" data-fk="apr-${esc(m)}-0" data-apr="${esc(m)}" data-i="0" value="${pr[0] ?? ""}" placeholder="in"><input class="mlh-input" type="number" min="0" step="any" inputmode="decimal" data-fk="apr-${esc(m)}-1" data-apr="${esc(m)}" data-i="1" value="${pr[1] ?? ""}" placeholder="out"></label>`; }).join("") || `<div class="mlh-empty">Models show up here after your first reply ♡</div>`}</div>
         </div>
         <label class="mlh-wxset"><span class="mlh-ptl">₩ per $1</span><input class="mlh-input" type="number" min="0" step="any" data-apfx="fx" value="${esc(P.fx)}"></label>
-        <div class="mlh-empty">Counts chat replies and rerolls in Marinara. Agents, image tools and other apps aren't included, so it's an estimate.</div>
+        <div class="mlh-empty">Counts chat replies and rerolls in Marinara (Gemini thinking tokens included as output). Agents, image tools and other apps aren't included, so it's an estimate.</div>
         <div class="mlh-pfoot"><button type="button" class="mlh-link" data-wa="del" data-wid="${w.id}">Turn off</button></div>${delTools(w, "Turn off the receipt?")}</div>` : "";
     const line = (a, b, c = "") => `<div class="mlh-rc-line"><span>${a}</span><i></i><b>${b}</b>${c ? `<em>${c}</em>` : ""}</div>`;
     return `<section class="mlh-card mlh-rcptcard">
