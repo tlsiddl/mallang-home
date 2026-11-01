@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   /* ══════════════════════════════════════════════════════════
-   *  말랑 홈 (공유판) v1.32.0 · Celestial Editorial
+   *  말랑 홈 (공유판) v1.32.1 · Celestial Editorial
    *  마리나라 기본 홈(HomeBrowserHub.HomePage) 안에 새 홈을 그리고
    *  기본 내용은 숨긴다. 기본 홈의 버튼(새 채팅·최근 채팅 카드)은
    *  DOM에 그대로 남겨 두고 대신 눌러 주는 방식이라 앱 기능을 건드리지 않는다.
@@ -1497,6 +1497,21 @@
     const h = hostOf(w.url); if (!h) return [];
     return all.filter((c) => hostOf(c.baseUrl || "") === h || String(c.baseUrl || "").includes(h));
   }
+  // 중계 카드: 기록을 시작하기 전 몫을 마리나라 기록으로 (사이트 통화)
+  function relayFill(w, from, to) {
+    const provs = new Set(relayConns(w).map((c) => c.provider)); if (!provs.size || !(to > from)) return 0;
+    let usdV = 0;
+    for (const [k, H] of Object.entries(ap.hours)) { const t = Date.parse(k + ":00:00"); if (t < from || t >= to) continue;
+      for (const [m, r] of Object.entries(H)) if (provs.has(apProv(m))) usdV += apCost(m, r[0], r[1], r[2]) || 0; }
+    return fromUSD(usdV, w.cur === "CNY" ? "CNY" : "USD");
+  }
+  function relayPeriods(w) {
+    const L = w.last; if (!L) return null;
+    if (!L.trk) return { today: L.today, month: L.month };
+    const now = new Date(), t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime(), m0 = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+    const ft = L.src === "logs" ? 0 : relayFill(w, t0, Math.max(t0, L.daySince || t0)), fm = L.src === "logs" ? 0 : relayFill(w, m0, Math.max(m0, L.monthSince || m0));
+    return { today: L.today + ft, month: L.month + fm, ft, fm };
+  }
   function apTotals() {
     const now = new Date(), t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime(), m0 = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
     const T = apSum(t0), M = apSum(m0), rows = {};
@@ -1510,9 +1525,10 @@
       const provs = [...new Set(relayConns(w).map((c) => c.provider).filter(Boolean))]; if (!provs.length) continue;
       const cur = w.cur === "CNY" ? "CNY" : "USD";
       // 같은 사이트의 공급자 칸이 여러 개면 첫 칸에 사이트 합계를 넣고 나머지는 비움(겹쳐 세지 않게)
+      const PR = relayPeriods(w) || {};
       provs.forEach((p, i) => {
         const r = row(p);
-        if (i === 0) { if (w.last.month != null) { r.m = toUSD(w.last.month, cur); r.src = "site"; r.un = 0; r.name = w.name || "Relay"; } if (w.last.today != null) r.t = toUSD(w.last.today, cur); }
+        if (i === 0) { if (PR.month != null) { r.m = toUSD(PR.month, cur); r.src = "site"; r.un = 0; r.name = w.name || "Relay"; } if (PR.today != null) r.t = toUSD(PR.today, cur); }
         else if (w.last.month != null) delete rows[p];
       });
     }
@@ -1739,7 +1755,22 @@
         T.lastU = U; T.lastAt = Date.now();
         if (w.rbal !== "" && w.rbal != null && w.rbase == null) w.rbase = U;
         const rem = w.rbal !== "" && w.rbal != null ? Math.max(0, Number(w.rbal) - (U - (Number(w.rbase) || 0))) : null;
-        w.last = { at: Date.now(), trk: true, used: U, today: Math.max(0, U - T.d.u), month: Math.max(0, U - T.m.u), daySince: T.d.since, monthSince: T.m.since, rem, total: rem != null ? Number(w.rbal) : null, acctErr };
+        let today = Math.max(0, U - T.d.u), month = Math.max(0, U - T.m.u), daySince = T.d.since, monthSince = T.m.since, src = "trk";
+        // 사용 기록(키로 조회)이 열려 있으면 요청마다의 시각·금액으로 오늘·이번 달을 정확히 (이전 기록까지)
+        try {
+          let qpu = 500000, mul = 1;
+          try { const st = (await getJ(base + "/api/status"))?.data || {}; qpu = Number(st.quota_per_unit) || qpu; if (String(st.quota_display_type || "").toUpperCase() === "CNY") mul = Number(st.usd_exchange_rate) || 1; } catch {}
+          let td = 0, mo = 0, ok = 0;
+          for (const k of keys) {
+            const j = await getJ(`${base}/api/log/token?key=${encodeURIComponent(k)}`);
+            const rows = Array.isArray(j?.data) ? j.data : Array.isArray(j?.data?.items) ? j.data.items : null;
+            if (!j || j.success === false || !rows) throw new Error(j?.message || "no logs");
+            for (const r of rows) { const ts = (Number(r.created_at) || 0) * 1000, q = (Number(r.quota) || 0) / qpu * mul; if (ts >= m0) mo += q; if (ts >= t0) td += q; }
+            ok++;
+          }
+          if (ok) { today = td; month = mo; daySince = t0; monthSince = m0; src = "logs"; }
+        } catch { /* 막혀 있으면 기록 방식 그대로 */ }
+        w.last = { at: Date.now(), trk: true, src, used: U, today, month, daySince, monthSince, rem, total: rem != null ? Number(w.rbal) : null, acctErr };
       } catch (e) { w.last = { at: Date.now(), err: (acctErr ? acctErr + " · " : "") + "Key: " + errText(e) }; }
     } finally { w.busy = false; savePrefs(); render(); }
   }
@@ -1803,8 +1834,10 @@
       const L = w.last, sinceTxt = (t) => new Date(t).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
       rem = L.rem; total = 0;
       sub = `keys used ${money(L.used)} in total${w.rbal !== "" && w.rbal != null ? ` · ${money(Math.max(0, L.used - (Number(w.rbase) || 0)))} since you entered the balance` : ""}`;
-      extra += `<div class="mlh-rc-line"><span>Today${L.daySince > new Date(new Date().setHours(0, 0, 0, 0)).getTime() + 60000 ? " (since " + esc(sinceTxt(L.daySince)) + ")" : ""}</span><i></i><b>${money(L.today)}</b><em>${won(L.today, rate)}</em></div>`;
-      extra += `<div class="mlh-rc-line"><span>This month${L.monthSince > new Date(new Date().getFullYear(), new Date().getMonth(), 1).getTime() + 60000 ? " (since " + esc(sinceTxt(L.monthSince)) + ")" : ""}</span><i></i><b>${money(L.month)}</b><em>${won(L.month, rate)}</em></div>`;
+      const PR = relayPeriods(w);
+      extra += `<div class="mlh-rc-line"><span>Today</span><i></i><b>${money(PR.today)}</b><em>${won(PR.today, rate)}</em></div>`;
+      extra += `<div class="mlh-rc-line"><span>This month</span><i></i><b>${money(PR.month)}</b><em>${won(PR.month, rate)}</em></div>`;
+      extra += `<div class="mlh-cr-tag">${L.src === "logs" ? "✓ from the site's usage log" : PR.fm > 0 || PR.ft > 0 ? `before ${esc(sinceTxt(L.monthSince))}: estimated from Marinara chats · after: the site's own count` : `counting since ${esc(sinceTxt(L.monthSince))} (the site's own count)`}</div>`;
       if (rem == null) warn = "Enter the balance shown on the site in Edit once — it will go down by what your keys spend.";
       chk = L.at;
     } else if (w.last && !w.last.err && w.last.total >= 0) {
