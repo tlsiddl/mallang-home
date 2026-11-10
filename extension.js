@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   /* ══════════════════════════════════════════════════════════
-   *  말랑 홈 (공유판) v1.36.1 · Celestial Editorial
+   *  말랑 홈 (공유판) v1.36.2 · Celestial Editorial
    *  마리나라 기본 홈(HomeBrowserHub.HomePage) 안에 새 홈을 그리고
    *  기본 내용은 숨긴다. 기본 홈의 버튼(새 채팅·최근 채팅 카드)은
    *  DOM에 그대로 남겨 두고 대신 눌러 주는 방식이라 앱 기능을 건드리지 않는다.
@@ -1936,6 +1936,16 @@
         if (w.mon) w.mon.chk = Date.now();
         return;
       }
+      if (w.mode === "github") {
+        const username=String(w.ghname||"").trim(),token=String(w.key||"").trim(),last={at:Date.now()};
+        if (!/^[a-zA-Z0-9-]{1,39}$/.test(username)||!token) { last.err="Enter GitHub username and a token with Plan: read permission"; w.last=last; return; }
+        try { const now=new Date(),year=now.getUTCFullYear(),month=now.getUTCMonth()+1;
+          const j=await getJ(`https://api.github.com/users/${encodeURIComponent(username)}/settings/billing/ai_credit/usage?year=${year}&month=${month}`,{headers:{Authorization:"Bearer "+token,Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2026-03-10"}});
+          if(!Array.isArray(j?.usageItems)) throw new Error("Unexpected response"); let used=0;
+          for(const row of j.usageItems){if(String(row.unitType||"").toLowerCase()!=="ai-credits")throw new Error("Unsupported usage unit");const n=Number(row.grossQuantity);if(row.grossQuantity == null || !Number.isFinite(n)||n<0)throw new Error("Invalid usage");used+=n;}
+          last.usedCredits=used;last.period=`${year}-${month}`;
+        } catch(e) { last.err="GitHub: "+errText(e); } w.last=last; return;
+      }
       if (w.mode === "ds") {
         const keys = String(w.key || "").split(/[\s,]+/).filter(Boolean);
         if (!keys.length) { w.last = { at: Date.now(), err: "Add your DeepSeek key in Edit" }; return; }
@@ -2118,7 +2128,7 @@
     if (wid().some((w) => w.kind === "credit" && w.mode === "gc" && !w.sa && w.gcid)) gisLoad().catch(() => {});
     for (const w of wid()) {
       if (w.kind !== "credit" || w.busy) continue;
-      const ready = w.mode === "relay" ? w.url && (w.key || w.tok) : w.mode === "ds" || w.mode === "or" ? w.key || w.mgmt : w.mode === "nano" ? w.key || w.conn || (data.conns || []).some((c) => /nano/i.test(String(c.provider || ""))) : w.at && (w.sa || (hasG(w) && oValid(w)));
+      const ready = w.mode === "github" ? w.ghname && w.key : w.mode === "relay" ? w.url && (w.key || w.tok) : w.mode === "ds" || w.mode === "or" ? w.key || w.mgmt : w.mode === "nano" ? w.key || w.conn || (data.conns || []).some((c) => /nano/i.test(String(c.provider || ""))) : w.at && (w.sa || (hasG(w) && oValid(w)));
       const last = w.mode === "gc" ? w.mon?.chk || 0 : w.last?.at || 0;
       if (ready && Date.now() - last > 30 * 60000) crLookup(w);
     }
@@ -2156,6 +2166,10 @@
       if (w.mon?.err) err = "Google: " + w.mon.err;
       chk = w.mon?.upd || 0;
       if (w.exp) { const dl = Math.ceil((new Date(w.exp + "T23:59:59").getTime() - Date.now()) / 86400000); foot = `Expires ${esc(w.exp)} · ${dl >= 0 ? "D-" + dl : "expired"}`; }
+    } else if (mode === "github") {
+      const L=w.last||{}, allowance=Number(w.ghlimit);
+      if(L.usedCredits!=null&&allowance>0){total=allowance/100;rem=Math.max(0,allowance-L.usedCredits)/100;sub=`${L.usedCredits.toLocaleString("en-US",{maximumFractionDigits:2})} AI credits used · allowance entered manually`;extra=`<div class="mlh-cr-tag">GitHub usage report · estimate; updates may be delayed · UTC month</div>`;}
+      err=L.err||"";chk=L.at||0;
     } else if (mode === "ds") {
       const L = w.last || {};
       if (L.bal >= 0) { rem = L.bal; total = 0; sub = `granted ${money(L.gr || 0)} · topped up ${money(L.tp || 0)}${L.avail === false ? " · ⚠ balance too low to call" : ""}`; }
@@ -2208,8 +2222,8 @@
       chk = w.last.at;
     } else { err = w.last?.err || ""; chk = w.last?.at || 0; }
     const pct = rem != null && total > 0 ? Math.max(0, Math.min(100, rem / total * 100)) : 0;
-    const title = esc(w.name || (mode === "gc" ? "Google Cloud" : mode === "nano" ? "NanoGPT" : mode === "ds" ? "DeepSeek" : mode === "or" ? "OpenRouter" : "API Credit"));
-    const tag = mode === "gc" ? `FREE TRIAL · ${KRW ? (Number(w.tot) ? money(Number(w.tot)) : "₩") : "$" + (Number(w.tot) || 300)}` : mode === "nano" ? "BALANCE · SUBSCRIPTION" : mode === "ds" ? "BALANCE · API.DEEPSEEK.COM" : mode === "or" ? "CREDITS · OPENROUTER.AI" : esc(String(w.url || "").replace(/^https?:\/\//, "").replace(/\/.*$/, "") || "RELAY API");
+    const title = esc(w.name || (mode === "gc" ? "Google Cloud" : mode === "github" ? "GitHub Copilot" : mode === "nano" ? "NanoGPT" : mode === "ds" ? "DeepSeek" : mode === "or" ? "OpenRouter" : "API Credit"));
+    const tag = mode === "github" ? "AI CREDITS · GITHUB" : mode === "gc" ? `FREE TRIAL · ${KRW ? (Number(w.tot) ? money(Number(w.tot)) : "₩") : "$" + (Number(w.tot) || 300)}` : mode === "nano" ? "BALANCE · SUBSCRIPTION" : mode === "ds" ? "BALANCE · API.DEEPSEEK.COM" : mode === "or" ? "CREDITS · OPENROUTER.AI" : esc(String(w.url || "").replace(/^https?:\/\//, "").replace(/\/.*$/, "") || "RELAY API");
     const fld = (k, label, type, ph, ex = "") => `<label class="mlh-wxset"><span class="mlh-ptl">${label}</span><input class="mlh-input" type="${type}" data-fk="cr-${w.id}-${k}" data-cr="${k}" data-wid="${w.id}" value="${esc(w[k] ?? "")}" placeholder="${ph}" ${ex}></label>`;
     const nanoConns = (data.conns || []).filter((c) => /nano/i.test(String(c.provider || "")));
     const kinds = { gc: () => `${chips("Currency", "crgcur", w, "gcur", [["USD", "$"], ["KRW", "₩"]])}
@@ -2238,6 +2252,10 @@
           ${chips("Currency", "crcur", w, "cur", [["USD", "$"], ["CNY", "CN¥"]])}
           <label class="mlh-wxset"><span class="mlh-ptl">Marinara connections for this site (the receipt uses the site's own total for them)</span><select class="mlh-input" data-crconn="${w.id}"><option value="">Auto — ${(() => { const n = w.conn ? 0 : relayConns(w).length; return w.conn ? "match by site address" : n ? `${n} connection${n > 1 ? "s" : ""} use ${esc(hostOf(w.url))}` : "no connection uses this address yet"; })()}</option>${(data.conns || []).filter((c) => !/nano|google|anthropic|claude/i.test(String(c.provider || ""))).map((c) => `<option value="${esc(c.id)}"${w.conn === c.id ? " selected" : ""}>${esc(c.name || c.model || c.id)} · ${esc(c.provider)}</option>`).join("")}</select></label>
           <div class="mlh-empty">Works with sites built on One API / New API. Checks every 30 min or with ↻.</div>`,
+      github: () => `${fld("ghname", "GitHub username", "text", "e.g. octocat", 'autocomplete="off" spellcheck="false"')}
+          ${fld("ghlimit", "Included AI credits per month (check GitHub; Max currently 20000)", "number", "20000", 'min="1" step="any"')}
+          ${fld("key", "GitHub fine-grained token — account permission Plan: read", "password", "github_pat_…", 'autocomplete="off"')}
+          <div class="mlh-empty">Token is saved in Marinara extension settings. Remaining credit is an estimate using your entered allowance and GitHub monthly usage report; GitHub's billing page is authoritative. Checks every 30 minutes.</div>`,
       ds: () => `${fld("key", "API key — from platform.deepseek.com → API keys (one is enough: the balance belongs to the account)", "password", "sk-…", 'autocomplete="off"')}
           ${chips("Currency", "crcur", w, "cur", [["CNY", "CN¥"], ["USD", "$"]])}
           <div class="mlh-empty">DeepSeek shows the balance only. Today and this month are counted from how much the balance goes down, so they start counting from the first check. Checks every 30 min or with ↻.</div>`,
@@ -2248,11 +2266,11 @@
       nano: () => `${fld("key", "API keys — every NanoGPT key you use (agents too), separated by spaces. The first one is used for the balance.", "password", "your NanoGPT keys", 'autocomplete="off"')}
           <label class="mlh-wxset"><span class="mlh-ptl">Subscription — read through this connection</span><select class="mlh-input" data-crconn="${w.id}"><option value="">Auto — ${nanoConns.length ? `${nanoConns.length} NanoGPT connection${nanoConns.length > 1 ? "s" : ""}` : "no NanoGPT connection"}</option>${nanoConns.map((c) => `<option value="${esc(c.id)}"${w.conn === c.id ? " selected" : ""}>${esc(c.name || c.model || c.id)}</option>`).join("")}</select></label>
           <div class="mlh-empty">The subscription is read through Marinara, so no key is needed for it.</div>` };
-    const tools = ed ? `<div class="mlh-ptools">${moveTools(w)}${chips("Type", "crmode", w, "mode", [["gc", "Google Cloud"], ["relay", "Relay API"], ["nano", "NanoGPT"], ["ds", "DeepSeek"], ["or", "OpenRouter"]])}
+    const tools = ed ? `<div class="mlh-ptools">${moveTools(w)}${chips("Type", "crmode", w, "mode", [["gc", "Google Cloud"], ["relay", "Relay API"], ["nano", "NanoGPT"], ["ds", "DeepSeek"], ["or", "OpenRouter"], ["github", "GitHub Copilot"]])}
         ${fld("name", "Name", "text", title, 'maxlength="40"')}
         ${(kinds[mode] || kinds.gc)()}
         <div class="mlh-pfoot"><button type="button" class="mlh-link" data-wa="del" data-wid="${w.id}">Delete</button></div>${delTools(w, "Delete this credit widget?")}</div>` : "";
-    const hint = mode === "gc" ? "Tap Edit and enter your remaining credit ☁" : w.busy ? "Checking…" : (mode === "nano" || mode === "ds" || mode === "or") ? (w.key ? "" : "Add your key in Edit to see the balance ✦") : "Tap Edit and add the site and key ✦";
+    const hint = mode === "gc" ? "Tap Edit and enter your remaining credit ☁" : w.busy ? "Checking…" : mode === "github" ? (!w.ghname || !w.key || !(Number(w.ghlimit)>0) ? "Add your GitHub username, monthly allowance and token in Edit" : "") : (mode === "nano" || mode === "ds" || mode === "or") ? (w.key ? "" : "Add your key in Edit to see the balance ✦") : "Tap Edit and add the site and key ✦";
     const body = rem == null ? (w.last?.keyOnly ? `<div class="mlh-cr-sub">${sub}</div>` : hint ? `<div class="mlh-empty">${esc(hint)}</div>` : "")
       : `<div class="mlh-cr-big"><b>${money(rem)}</b>${total > 0 ? `<span>/ ${money(total)}</span>` : ""}</div>
         ${rate > 0 ? `<div class="mlh-cr-won">${won(rem, rate)}</div>` : ""}
@@ -2332,7 +2350,7 @@
       savePrefs(); render();
       if (k === "bal" || k === "lag") { apScan(true); if (hasG(w)) crLookup(w); }
       if (k === "gcid" || k === "proj") { delete w.mon; if (k === "gcid") gTok.delete(oKey(w)); if (w.gcid) gisLoad().catch(() => {}); }
-      if ((w.mode === "relay" && (k === "url" || k === "key" || k === "tok" || k === "uid" || k === "rbal")) || ((w.mode === "nano" || w.mode === "ds") && k === "key") || (w.mode === "or" && (k === "key" || k === "mgmt" || k === "rbal"))) { if (k === "rbal") delete w.rbase; w.last = null; crLookup(w); }
+      if ((w.mode === "github" && (k === "ghname" || k === "ghlimit" || k === "key")) || (w.mode === "relay" && (k === "url" || k === "key" || k === "tok" || k === "uid" || k === "rbal")) || ((w.mode === "nano" || w.mode === "ds") && k === "key") || (w.mode === "or" && (k === "key" || k === "mgmt" || k === "rbal"))) { if (k === "rbal") delete w.rbase; w.last = null; crLookup(w); }
       return true;
     }
     return false;
