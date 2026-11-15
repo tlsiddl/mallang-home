@@ -1234,7 +1234,7 @@
   /* ── 🧾 API 영수증 + 💳 크레딧(구글 클라우드 · 중계 API 잔액) ──
      영수증: 채팅 메시지(리롤 포함)에 마리나라가 적어 둔 토큰 수를 모아서, 내가 적은 모델 단가로 금액 계산
      크레딧: 구글 클라우드 = 내가 적은 잔액 − 그 뒤로 구글 모델에 쓴 예상 금액 / 중계 API = 키로 잔액 조회 */
-  const AP_PAGE = 100, AP_DAYS_MAX = 92, AP_STALE = 10 * 60000, CR_MAX = 4;
+  const AP_PAGE = 100, AP_DAYS_MAX = 92, AP_STALE = 10 * 60000;
   const SEP = "␟";
   // price: "사이트␟모델" → [입력, 출력] (그 사이트 통화, 100만 토큰당) · 옛 키("모델"만)는 달러로 모든 사이트에
   // siteCur: 사이트별 단가 통화 · disp: 영수증 표시 통화 · fx/fxc: 손으로 적은 환율(비우면 매일 받아 온 환율)
@@ -2300,7 +2300,7 @@
     const b = t.closest("[data-wa]"); if (!b) return false;
     const a = b.dataset.wa, w = b.dataset.wid ? widById(b.dataset.wid) : null, v = b.dataset.v;
     if (a === "addrcpt") { startOpen = false; if (!wid().some((x) => x.kind === "rcpt")) { const m = { id: newWid(), kind: "rcpt", col: 1, slot: 9 }; wid().push(m); savePrefs(); apScan(true); } render(); return true; }
-    if (a === "addcredit") { startOpen = false; if (wid().filter((x) => x.kind === "credit").length < CR_MAX) { const m = { id: newWid(), kind: "credit", col: 1, slot: 9, mode: "gc", tot: 300, scope: "vertex" }; wid().push(m); widEdit = m.id; savePrefs(); } render(); return true; }
+    if (a === "addcredit") { startOpen = false; const m = { id: newWid(), kind: "credit", col: 1, slot: 9, mode: "gc", tot: 300, scope: "vertex" }; wid().push(m); widEdit = m.id; savePrefs(); render(); return true; }
     if (!w) return false;
     if (a === "crmode") { if (w.mode !== v) { w.mode = v; w.last = null; w.key = ""; w.mgmt = ""; w.rbal = ""; delete w.rbase; delete w.ntrk; delete w.curSet; w.cur = v === "ds" ? "CNY" : "USD"; } }
     else if (a === "crscope") w.scope = v;
@@ -2449,7 +2449,7 @@
       hasMus ? "" : `<button type="button" data-wa="addmusic"><i data-s="headphones"></i>Add Player</button>`,
       wid().some((x) => x.kind === "weather") ? "" : `<button type="button" data-wa="addweather"><i data-s="wx-sun"></i>Add Weather</button>`,
       wid().some((x) => x.kind === "rcpt") ? "" : `<button type="button" data-wa="addrcpt"><i data-s="clip"></i>Add API Receipt</button>`,
-      wid().filter((x) => x.kind === "credit").length >= CR_MAX ? "" : `<button type="button" data-wa="addcredit"><i data-s="star"></i>Add Credit</button>`,
+      `<button type="button" data-wa="addcredit"><i data-s="star"></i>Add Credit</button>`,
       `<button type="button" data-act="arrange"><i data-s="clip"></i>${arranging ? "Stop arranging" : "Arrange widgets"}</button>`,
       `<button type="button" data-act="phone"><i data-s="crt"></i>Phone view: ${prefs.phone === "mini" ? "Mini PC" : "Stack"}</button>`,
       `<button type="button" data-act="playat"><i data-s="star"></i>Play menu: ${playAt() === "card" ? "Card" : "Top bar"}</button>`,
