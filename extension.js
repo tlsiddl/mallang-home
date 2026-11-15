@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   /* ══════════════════════════════════════════════════════════
-   *  말랑 홈 (공유판) v1.36.2 · Celestial Editorial
+   *  말랑 홈 (공유판) v1.36.4 · Celestial Editorial
    *  마리나라 기본 홈(HomeBrowserHub.HomePage) 안에 새 홈을 그리고
    *  기본 내용은 숨긴다. 기본 홈의 버튼(새 채팅·최근 채팅 카드)은
    *  DOM에 그대로 남겨 두고 대신 눌러 주는 방식이라 앱 기능을 건드리지 않는다.
@@ -1271,7 +1271,7 @@
     [/opus.?5.?5|opus-5-5/i, [4, 20]], [/opus.?5\b|opus-5(?!\.)/i, [5, 25]], [/opus/i, [5, 25]],
     [/sonnet.?5/i, [2, 10]], [/sonnet/i, [3, 15]],
     [/haiku.?5/i, [0.1, 0.5]], [/haiku/i, [1, 5]],
-    [/fable|mythos/i, [10, 50]],
+    [/(?:fable|mythos).?5.?2/i, [8, 40]], [/fable|mythos/i, [10, 50]], // 5.2는 8/40 (Token Cost Receipt 3.1.0 프리셋과 같음) · 그 밖(5.1 등)은 10/50
     [/argon/i, () => Date.now() < Date.parse("2026-12-01T00:00:00-08:00") ? [2, 10] : [4, 20]],
     [/gemini.?3\.[678].?flash(?!.?lite)/i, () => Date.now() < Date.parse("2027-01-01T00:00:00-08:00") ? [0.75, 3.75] : [1.5, 7.5]],
     [/gemini.?3\.5.?flash.?lite/i, [0.3, 2.5]], [/gemini.?3\.1.?flash.?lite/i, [0.25, 1.5]],
