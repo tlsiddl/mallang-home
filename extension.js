@@ -1347,8 +1347,8 @@
   }
 
 
-  const ap = { busy: false, err: "", at: 0, done: 0, todo: 0, from: "", hours: {}, cache: null, gm: null };
-  const AP_LS = "mlh-api-usage-v3";
+  const ap = { busy: false, err: "", at: 0, done: 0, todo: 0, from: "", hours: {}, recent: [], cache: null, gm: null };
+  const AP_LS = "mlh-api-usage-v4";
   function apCache() {
     if (ap.cache) return ap.cache;
     try { ap.cache = JSON.parse(localStorage.getItem(AP_LS) || "null"); } catch { ap.cache = null; }
@@ -1365,7 +1365,7 @@
   }
   const parseX = (x) => { if (x && typeof x === "object") return x; try { return JSON.parse(x || "{}") || {}; } catch { return {}; } };
   async function apScanChat(c, fromMs) {
-    const out = {}; let before = "", pages = 0;
+    const out = {}, recent = []; let before = "", pages = 0;
     const add = (ex, ts) => {
       const t = Date.parse(ts || ""); if (!t || t < fromMs) return;
       const g = parseX(ex).generationInfo; if (!g || typeof g !== "object") return;
@@ -1375,6 +1375,7 @@
       const p = Number(g.tokensPrompt) || 0, o = (Number(g.tokensCompletion) || 0) + (gg ? th : 0);
       if (!p && !o) return;
       const k = hourKey(t), m = `${g.provider || "?"}${SEP}${g.model || "unknown"}`;
+      if (t >= Date.now() - 2 * 86400000 && c.connectionId) recent.push({ t, id: c.connectionId, m, p, o, n: Math.max(1, Number(g.requestCount) || 1) });
       const h = out[k] || (out[k] = {}), r = h[m] || (h[m] = [0, 0, 0, 0]);
       r[0] += p; r[1] += o; r[2] += Math.max(1, Number(g.requestCount) || 1); r[3] = (r[3] || 0) + th;
     };
@@ -1395,7 +1396,7 @@
       if (rows.length < AP_PAGE || Date.parse(first.createdAt || "") < fromMs) break;
       before = `${first.createdAt}|${encodeURIComponent(first.id)}`;
     }
-    return out;
+    return { h: out, recent };
   }
   // Vertex: 구글 카드에 서비스 계정/로그인이 있으면 오늘·이번 달을 구글이 센 토큰으로
   async function apGoogle() {
@@ -1496,13 +1497,13 @@
       const chats = (await api("/chats").catch(() => [])) || [];
       const live = chats.filter((c) => Date.parse(c.lastMessageAt || c.updatedAt || "") >= fromMs);
       const keep = {};
-      const todo = live.filter((c) => { const k = `${c.lastMessageAt || ""}|${c.updatedAt || ""}`, hit = cache.chats[c.id]; if (hit && hit.k === k) { keep[c.id] = hit; return false; } return true; });
+      const todo = live.filter((c) => { const k = `${c.lastMessageAt || ""}|${c.updatedAt || ""}|${c.connectionId || ""}`, hit = cache.chats[c.id]; if (hit && hit.k === k) { keep[c.id] = hit; return false; } return true; });
       ap.todo = todo.length;
       let i = 0;
       const worker = async () => {
         while (i < todo.length) {
           const c = todo[i++];
-          try { keep[c.id] = { k: `${c.lastMessageAt || ""}|${c.updatedAt || ""}`, h: await apScanChat(c, fromMs) }; }
+          try { keep[c.id] = { k: `${c.lastMessageAt || ""}|${c.updatedAt || ""}|${c.connectionId || ""}`, ...(await apScanChat(c, fromMs)) }; }
           catch { /* 이 방은 다음에 */ }
           ap.done++; if (ap.done % 4 === 0 || ap.done === ap.todo) apPaint(true);
         }
@@ -1517,7 +1518,7 @@
         const H = hours[k] || (hours[k] = {});
         for (const [m, r] of Object.entries(ms)) { const R = H[m] || (H[m] = [0, 0, 0, 0]); R[0] += r[0]; R[1] += r[1]; R[2] += r[2]; R[3] += r[3] || 0; }
       }
-      ap.hours = hours; ap.from = from; ap.at = Date.now();
+      ap.hours = hours; ap.recent = Object.values(keep).flatMap((x) => x.recent || []); ap.from = from; ap.at = Date.now();
       if (wid().some((w) => w.kind === "rcpt")) await apGoogle();
     } catch (e) { ap.err = "Couldn't read usage: " + (e?.message || e); }
     finally { ap.busy = false; apPaint(); }
@@ -1558,6 +1559,19 @@
       }
     }
     return tot;
+  }
+  function recentForCredit(w, now = Date.now()) {
+    const prefix = String(w.hybridPrefix || "").trim().toLowerCase();
+    const ids = new Set((data.conns || []).filter((c) => { const name = String(c.name || "").trim().toLowerCase(); return prefix && (name === prefix || name.startsWith(prefix + " ")); }).map((c) => c.id));
+    const since = Math.max(Date.parse(w.at) || 0, Number(w.hybridStart) || 0, Number(w.mon?.cutoff) || now - 86400000);
+    const out = { cost: 0, p: 0, o: 0, unpriced: 0, requests: 0, matchingConnections: ids.size };
+    for (const r of ap.recent || []) {
+      if (!ids.has(r.id) || r.t < since || r.t > now) continue;
+      out.p += r.p; out.o += r.o; out.requests += r.n;
+      const cost = apCost("google_vertex" + SEP + apModelName(r.m), r.p, r.o, r.n);
+      if (cost == null) out.unpriced += r.n; else out.cost += cost;
+    }
+    return out;
   }
   const kTok = (n) => n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M" : n >= 1e3 ? (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + "k" : String(n | 0);
   const usd = (v) => "$" + (v >= 100 ? v.toFixed(0) : v >= 1 ? v.toFixed(2) : v.toFixed(3));
@@ -1910,10 +1924,16 @@
   // 모니터링 기록은 6주만 남아서, 일주일 넘게 지난 몫은 접어서(base) 보관
   async function gcMonLoad(w) {
     const at = Date.parse(w.at || ""); if (!hasG(w) || !at) return;
-    const mon = w.mon && w.mon.at === w.at && Number.isFinite(w.mon.from) ? w.mon : (w.mon = { at: w.at, from: at, base: {}, live: {}, upd: 0 });
-    const now = Date.now();
-    if (now - mon.from > 7 * 86400000) { const cut = now - 86400000; mon.base = addTok(mon.base, await gTokens(w, mon.from, cut)); mon.from = cut; }
-    mon.live = await gTokens(w, mon.from, now); mon.upd = now; mon.err = "";
+    const hybrid = !!w.hybridStart;
+    const mon = w.mon && w.mon.at === w.at && w.mon.hybrid === hybrid && Number.isFinite(w.mon.from) ? w.mon : (w.mon = { at: w.at, hybrid, from: at, base: {}, live: {}, upd: 0 });
+    const now = Date.now(), end = hybrid ? now - 86400000 : now;
+    if (end <= mon.from) mon.live = {};
+    else {
+      if (end - mon.from > 7 * 86400000) { const cut = end - 86400000; mon.base = addTok(mon.base, await gTokens(w, mon.from, cut)); mon.from = cut; }
+      mon.live = await gTokens(w, mon.from, end);
+    }
+    if (hybrid) mon.cutoff = end;
+    mon.upd = now; mon.err = "";
   }
   const monSum = (w) => addTok(w.mon?.base, w.mon?.live);
 
@@ -2153,10 +2173,13 @@
         if (hasG(w) && w.mon && w.mon.at === w.at && w.mon.upd) {
           const T = monSum(w); let cost = 0, tin = 0, tout = 0; const nop = [];
           for (const [m, r] of Object.entries(T)) { tin += r[0]; tout += r[1]; const c = apCost("google_vertex" + SEP + m, r[0], r[1]); if (c == null) { if (r[0] + r[1] > 0) nop.push(m); } else cost += c; }
+          const recent = w.hybridStart ? recentForCredit(w) : null;
+          if (recent) { cost += recent.cost; tin += recent.p; tout += recent.o; }
           rem = Math.max(0, Number(w.bal) - toG(cost));
           sub = `used since ${since}: ${money(toG(cost))} · ${kTok(tin)} ↑ ${kTok(tout)} ↓`;
-          extra = `<div class="mlh-cr-tag">✓ counted by Google — chats, agents, extensions, every device</div>`;
-          if (nop.length) warn = `✎ needs a price on the receipt: ${nop.map(esc).join(", ")}`;
+          extra = recent ? `<div class="mlh-cr-tag">Estimated: Google through 24h ago + recent chats ${money(toG(recent.cost))} · ${recent.requests} requests. Current chat connection is assumed; other devices/apps and late Google data may be missing.</div>` : `<div class="mlh-cr-tag">✓ counted by Google — chats, agents, extensions, every device</div>`;
+          if (recent && (!recent.matchingConnections || recent.unpriced || !ap.at)) warn = `✎ ${!recent.matchingConnections ? "no matching connections; " : ""}${!ap.at ? "chat usage not loaded; " : ""}${recent.unpriced ? `${recent.unpriced} recent requests need prices` : ""}`;
+          if (nop.length) warn += ` ✎ needs a price on the receipt: ${nop.map(esc).join(", ")}`;
         } else {
           const S = apSum(Date.parse(w.at) || 0, crScopeOk(w));
           rem = Math.max(0, Number(w.bal) - toG(S.cost));
@@ -2239,6 +2262,9 @@
           ${fld("proj", "Project ID", "text", "e.g. concise-wharf-513208-j1", 'autocomplete="off" spellcheck="false"')}
           ${fld("monitorUrl", "Monitoring service URL (optional)", "url", "https://…run.app", 'autocomplete="off"')}
           ${fld("monitorKey", "Monitoring service key", "password", "", 'autocomplete="off"')}
+          ${fld("hybridPrefix", "Recent estimate — connection name prefix", "text", "e.g. 72 ", 'autocomplete="off"')}
+          <div class="mlh-empty">Google through 24 hours ago + newer chat usage from the time you start. Uses each chat's current connection; changing a chat's connection can misattribute older replies. Other apps and late Google data may be missing.</div>
+          <button type="button" class="mlh-link" data-wa="${w.hybridStart ? "crhybridstop" : "crhybridstart"}" data-wid="${w.id}">${w.hybridStart ? "Stop recent estimate" : "Start recent estimate now"}</button>
           <div class="mlh-empty">Allowed origin for the client ID: <b>${esc(location.origin)}</b></div>
           <div class="mlh-wxset"><span class="mlh-ptl">…or a service account key file</span>
             ${w.sa ? `<div class="mlh-empty">✓ ${esc(w.sa.client_email)} · ${esc(w.sa.project_id)} <button type="button" class="mlh-link" data-wa="crsax" data-wid="${w.id}">Remove</button></div>`
@@ -2315,6 +2341,8 @@
     else if (a === "appre") { const prov = b.dataset.prov, P = apw(); if (prov != null) { P.sitePre = { ...(P.sitePre || {}), [prov]: v }; if (PRESETS[v]) { P.siteCur[prov] = PRESETS[v].cur; } } }
     else if (a === "crgcur") { if (w.gcur !== v) { w.gcur = v; w.bal = ""; w.at = ""; w.tot = v === "KRW" ? "" : 300; delete w.mon; } }
     else if (a === "crsax") { delete w.sa; delete w.mon; w.saErr = ""; }
+    else if (a === "crhybridstart") { if (!String(w.hybridPrefix || "").trim()) return true; w.hybridStart = Date.now(); delete w.mon; ap.at = 0; apScan(true); crLookup(w); }
+    else if (a === "crhybridstop") { delete w.hybridStart; delete w.mon; crLookup(w); }
     else return false;
     savePrefs(); render(); crAuto(); return true;
   }
