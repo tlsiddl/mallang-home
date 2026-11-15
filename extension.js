@@ -1849,10 +1849,11 @@
   }
   /* 열쇠 파일을 못 만드는 계정용: 구글 로그인(OAuth) 팝업으로 1시간짜리 토큰 받기 */
   const G_SCOPE = "https://www.googleapis.com/auth/monitoring.read";
-  const hasG = (w) => !!(w.sa || (w.gcid && w.proj));
+  const hasProxy = (w) => !!(w.monitorUrl && w.monitorKey);
+  const hasG = (w) => !!(hasProxy(w) || w.sa || (w.gcid && w.proj));
   const gProj = (w) => w.sa?.project_id || String(w.proj || "").trim();
   const oKey = (w) => "o:" + String(w.gcid || "").trim();
-  const oValid = (w) => { const h = gTok.get(oKey(w)); return !!h && h.exp > Date.now() + 60000; };
+  const oValid = (w) => { const h = gTok.get(oKey(w)); return hasProxy(w) || (!!h && h.exp > Date.now() + 60000); };
   let gisP = null;
   function gisLoad() {
     if (globalThis.google?.accounts?.oauth2) return Promise.resolve();
@@ -1885,7 +1886,7 @@
   // [from, to] 동안 Vertex 모델별 입력·출력 토큰 합계 {model: [in, out]}
   async function gTokens(w, fromMs, toMs) {
     const sa = { project_id: gProj(w) };
-    const tok = await gAccess(w), sec = Math.max(60, Math.ceil((toMs - fromMs) / 1000));
+    const tok = hasProxy(w) ? w.monitorKey : await gAccess(w), sec = Math.max(60, Math.ceil((toMs - fromMs) / 1000));
     const q = new URLSearchParams();
     q.set("filter", 'metric.type="aiplatform.googleapis.com/publisher/online_serving/token_count"');
     q.set("interval.startTime", new Date(toMs - sec * 1000).toISOString()); q.set("interval.endTime", new Date(toMs).toISOString());
@@ -1894,7 +1895,8 @@
     const out = {}; let page = "";
     for (let n = 0; n < 10; n++) {
       if (page) q.set("pageToken", page);
-      const j = await getJ(`https://monitoring.googleapis.com/v3/projects/${encodeURIComponent(sa.project_id)}/timeSeries?${q}`, { headers: { Authorization: "Bearer " + tok } });
+      const target = hasProxy(w) ? `${String(w.monitorUrl).replace(/\/$/, "")}/usage?${new URLSearchParams({ start: new Date(fromMs).toISOString(), end: new Date(toMs).toISOString() })}` : `https://monitoring.googleapis.com/v3/projects/${encodeURIComponent(sa.project_id)}/timeSeries?${q}`;
+      const j = await getJ(target, { headers: { Authorization: "Bearer " + tok } });
       for (const s of j.timeSeries || []) {
         const m = s.resource?.labels?.model_user_id || "unknown", t = String(s.metric?.labels?.type || "").toLowerCase();
         const v = (s.points || []).reduce((a, p) => a + (Number(p.value?.int64Value ?? p.value?.doubleValue) || 0), 0);
@@ -2235,6 +2237,8 @@
           <div class="mlh-wxset"><span class="mlh-ptl">Count Vertex with Google (optional) — sign-in</span></div>
           ${fld("gcid", "OAuth client ID", "text", "1234…apps.googleusercontent.com", 'autocomplete="off" spellcheck="false"')}
           ${fld("proj", "Project ID", "text", "e.g. concise-wharf-513208-j1", 'autocomplete="off" spellcheck="false"')}
+          ${fld("monitorUrl", "Monitoring service URL (optional)", "url", "https://…run.app", 'autocomplete="off"')}
+          ${fld("monitorKey", "Monitoring service key", "password", "", 'autocomplete="off"')}
           <div class="mlh-empty">Allowed origin for the client ID: <b>${esc(location.origin)}</b></div>
           <div class="mlh-wxset"><span class="mlh-ptl">…or a service account key file</span>
             ${w.sa ? `<div class="mlh-empty">✓ ${esc(w.sa.client_email)} · ${esc(w.sa.project_id)} <button type="button" class="mlh-link" data-wa="crsax" data-wid="${w.id}">Remove</button></div>`
