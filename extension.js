@@ -1908,7 +1908,7 @@
   // 모니터링 기록은 6주만 남아서, 일주일 넘게 지난 몫은 접어서(base) 보관
   async function gcMonLoad(w) {
     const at = Date.parse(w.at || ""); if (!hasG(w) || !at) return;
-    const mon = w.mon && w.mon.at === w.at ? w.mon : (w.mon = { at: w.at, from: at, base: {}, live: {}, upd: 0 });
+    const mon = w.mon && w.mon.at === w.at && Number.isFinite(w.mon.from) ? w.mon : (w.mon = { at: w.at, from: at, base: {}, live: {}, upd: 0 });
     const now = Date.now();
     if (now - mon.from > 7 * 86400000) { const cut = now - 86400000; mon.base = addTok(mon.base, await gTokens(w, mon.from, cut)); mon.from = cut; }
     mon.live = await gTokens(w, mon.from, now); mon.upd = now; mon.err = "";
